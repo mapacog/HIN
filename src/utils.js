@@ -133,7 +133,11 @@ export function normalizeNetworkFeature(graphic, kind) {
     control: segment ? null : a.traffic_control_type,
     nonmotorists: Number(a.nonmotorist_counted || 0), bicycles: Number(a.num_bike || 0),
     vehicles: Number(a.num_veh_count || a.num_veh || 0), occupants: Number(a.num_occ_count || a.num_occ || 0),
-    speeding: Number(a.drv_speeding || 0), impaired: Number(a.drv_under_inf || 0) + Number(a.alcohol_related || 0),
+    speeding: Number(a.drv_speeding || 0), distracted: Number(a.drv_distracted || 0),
+    impaired: Number(a.drv_under_inf || 0) + Number(a.alcohol_related || 0),
+    unrestrained: Number(a.adult_unrestrained || 0) + Math.max(Number(a.child_6_unrestrained || 0), Number(a.child_8_unrestrained || 0), Number(a.child_6_18_unrestrained || 0), Number(a.child_8_18_unrestrained || 0)),
+    youngDrivers: Number(a.driver_under_25 || 0), olderDrivers: Number(a.driver_65 || 0),
+    workZones: Number(a.wz_related || 0), citations: Number(a.num_cited_drv || 0),
     hin: Number(a.HIN || 0), graphic,
   };
 }

@@ -27,7 +27,9 @@ button { color: inherit; }
 
 .topbar { position: relative; z-index: 30; display: flex; align-items: center; gap: 25px; min-width: 0; padding: 0 24px; background: white; border-bottom: 4px solid var(--blue); box-shadow: 0 3px 16px rgba(0, 75, 88, .09); }
 .topbar::after { content: ''; position: absolute; right: 0; bottom: -4px; width: 22%; height: 4px; background: var(--yellow); }
-.topbar > img { width: 270px; max-height: 48px; object-fit: contain; object-position: left center; }
+.brand-link { flex: none; width: 270px; line-height: 0; border-radius: 2px; }
+.brand-link img { width: 100%; max-height: 48px; object-fit: contain; object-position: left center; }
+.brand-link:focus-visible { outline: 3px solid var(--yellow); outline-offset: 4px; }
 .product-name { min-width: 0; padding-left: 24px; border-left: 1px solid var(--line); }
 .product-name span { display: block; margin-bottom: 1px; color: var(--blue); font: 600 12px/1.2 Oswald, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
 .product-name h1 { margin: 0; color: var(--dark); font: 500 22px/1.1 Oswald, sans-serif; letter-spacing: .015em; text-transform: uppercase; white-space: nowrap; }
@@ -43,7 +45,9 @@ button { color: inherit; }
 .status-popover p { margin: 6px 0; font-size: 13px; line-height: 1.4; }
 .status-popover small { color: var(--muted); font-size: 11px; line-height: 1.35; }
 
-.workspace { min-height: 0; display: grid; grid-template-columns: 360px minmax(460px, 1fr) 410px; }
+.workspace { min-height: 0; display: grid; grid-template-columns: 360px minmax(460px, 1fr) 410px; transition: grid-template-columns .22s ease; }
+.workspace.left-collapsed { grid-template-columns: 0 minmax(460px, 1fr) 410px; }
+.workspace.left-collapsed .left-panel { visibility: hidden; overflow: hidden; }
 .left-panel, .insights-panel { min-width: 0; min-height: 0; background: #f8f9f8; }
 .left-panel { z-index: 10; border-right: 1px solid #cfd8d6; }
 .left-panel > nav { height: 55px; display: grid; grid-template-columns: 1fr 1fr; background: white; border-bottom: 1px solid var(--line); }
@@ -120,7 +124,14 @@ button { color: inherit; }
 .multi-select.disabled > p { padding: 0 12px 12px; font-size: 12px; }
 
 .map-panel { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #dfe7e5; }
+.left-collapse { position: absolute; z-index: 12; top: 50%; left: 0; width: 28px; height: 44px; display: grid; place-items: center; padding: 0; color: var(--teal); border: 1px solid #c9d4d2; border-left: 0; background: white; box-shadow: 0 3px 10px rgba(0,75,88,.14); transform: translateY(-50%); cursor: pointer; }
 .map-canvas { width: 100%; height: 100%; }
+.selection-tools { width: 306px; padding: 10px; color: var(--dark); border-top: 3px solid var(--blue); box-shadow: var(--shadow); }
+.selection-tools > strong { display: block; margin-bottom: 7px; font: 600 14px Oswald, sans-serif; letter-spacing: .035em; text-transform: uppercase; }
+.selection-tools > div { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.selection-tools button { min-height: 32px; padding: 5px 6px; color: var(--dark); border: 1px solid #bdc9c7; background: white; font: 600 11px Roboto, sans-serif; cursor: pointer; }
+.selection-tools button:hover, .selection-tools button:focus-visible { color: white; border-color: var(--blue); background: var(--blue); }
+.selection-tools small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
 .map-key { position: absolute; z-index: 5; left: 50%; bottom: 57px; display: flex; gap: 16px; padding: 9px 13px; transform: translateX(-50%); background: rgba(255,255,255,.96); border: 1px solid #d4dcda; box-shadow: 0 5px 18px rgba(28,52,56,.13); font-size: 12px; white-space: nowrap; }
 .map-key span { display: flex; align-items: center; gap: 7px; }
 .map-key i.line { width: 24px; border-top: 4px solid var(--blue); }
@@ -133,6 +144,8 @@ button { color: inherit; }
 .esri-ui-top-right { top: 10px !important; }
 .esri-search { width: min(310px, calc(100vw - 140px)) !important; }
 .network-popup { min-width: 270px; padding: 5px 2px; font: 13px/1.4 Roboto, sans-serif; }
+.esri-popup__main-container { width: 415px !important; height: 310px !important; min-width: 310px; min-height: 220px; max-width: min(620px, calc(100vw - 28px)) !important; max-height: min(440px, calc(100vh - 110px)) !important; overflow: auto !important; resize: both; }
+.esri-popup__content { max-height: none !important; }
 .network-popup > p { margin: 0 0 12px; font-weight: 700; }
 .popup-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
 .popup-metrics span { min-width: 0; padding: 7px 5px; text-align: center; background: #eef5f3; border-top: 3px solid var(--mint); }
@@ -263,12 +276,15 @@ button { color: inherit; }
 .table-state { display: grid; place-items: center; color: var(--muted); font-size: 14px; }
 .row-limit { margin: 0; padding: 10px 15px; color: var(--muted); background: #fff8e8; font-size: 12px; }
 .mobile-nav { display: none; }
+.impact-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 20px 12px; }
+.impact-tabs button { padding: 8px; color: var(--teal); border: 1px solid #bfcac8; background: white; font-weight: 700; cursor: pointer; }
+.impact-tabs button.active { color: white; border-color: var(--teal); background: var(--teal); }
 
 @keyframes pulse { from { opacity: .45; } to { opacity: 1; } }
 
 @media (max-width: 1350px) {
   .workspace { grid-template-columns: 330px minmax(430px, 1fr) 375px; }
-  .topbar > img { width: 235px; }
+  .brand-link { width: 235px; }
   .product-name h1 { font-size: 20px; }
   .comparison-grid { grid-template-columns: 1fr; }
   .comparison-grid article > p { min-height: 0; }
@@ -276,7 +292,7 @@ button { color: inherit; }
 
 @media (max-width: 1060px) {
   .workspace { grid-template-columns: 320px minmax(390px, 1fr) 340px; }
-  .topbar > img { width: 190px; }
+  .brand-link { width: 190px; }
   .product-name { padding-left: 16px; }
   .product-name span { display: none; }
   .map-key { display: none; }
@@ -285,11 +301,16 @@ button { color: inherit; }
 }
 
 @media (max-width: 840px) {
+  .left-collapse { display: none; }
+  .selection-tools { width: 270px; max-width: calc(100vw - 82px); }
+  .selection-tools > div { grid-template-columns: repeat(2, 1fr); }
+  .esri-popup__main-container { width: 100% !important; min-width: 0; max-width: 100% !important; max-height: 55vh !important; resize: none; }
   html, body, #root { overflow: hidden; }
   .app { grid-template-rows: 62px minmax(0, 1fr) 64px; }
   .topbar { gap: 10px; padding: 0 12px; border-bottom-width: 3px; }
   .topbar::after { bottom: -3px; height: 3px; width: 36%; }
-  .topbar > img { width: 155px; max-height: 39px; }
+  .brand-link { width: 155px; }
+  .brand-link img { max-height: 39px; }
   .product-name { flex: 1; padding-left: 10px; }
   .product-name h1 { font-size: 16px; white-space: normal; }
   .top-actions > button:not(.mobile-menu), .status-wrap { display: none; }
@@ -326,7 +347,7 @@ button { color: inherit; }
 }
 
 @media (max-width: 430px) {
-  .topbar > img { width: 126px; }
+  .brand-link { width: 126px; }
   .product-name h1 { font-size: 14px; }
   .product-name { border-left: 0; padding-left: 0; }
   .mobile-menu { width: 38px !important; }
