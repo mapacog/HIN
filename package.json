@@ -17,6 +17,7 @@
     "@mapbox/shp-write": "^0.4.3",
     "@ngageoint/geopackage": "^4.2.9",
     "lucide-react": "^0.542.0",
+    "qrcode": "^1.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

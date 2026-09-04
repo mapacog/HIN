@@ -6,15 +6,16 @@ import Graphic from '@arcgis/core/Graphic.js';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer.js';
 import Expand from '@arcgis/core/widgets/Expand.js';
 import Home from '@arcgis/core/widgets/Home.js';
-import LayerList from '@arcgis/core/widgets/LayerList.js';
 import Legend from '@arcgis/core/widgets/Legend.js';
 import Search from '@arcgis/core/widgets/Search.js';
 import ScaleBar from '@arcgis/core/widgets/ScaleBar.js';
 import SketchViewModel from '@arcgis/core/widgets/Sketch/SketchViewModel.js';
+import * as reactiveUtils from '@arcgis/core/core/reactiveUtils.js';
+import QRCode from 'qrcode';
 import {
-  BarChart3, Bike, Car, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Download, Filter, Footprints,
-  Layers3, Map as MapIcon, Menu, RefreshCcw, Route, Search as SearchIcon,
-  ShieldCheck, SlidersHorizontal, Table2, X,
+  BarChart3, Bike, Car, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Code2, Copy, Download, Filter, Footprints,
+  Layers3, LocateFixed, Mail, Map as MapIcon, Menu, QrCode, RefreshCcw, Route, Search as SearchIcon,
+  Share2, ShieldCheck, SlidersHorizontal, Table2, X,
 } from 'lucide-react';
 import {
   BRAND, CONTROL_OPTIONS, DEFAULT_FILTERS, FUNCTIONAL_CLASSES, INTERSECTION_TYPES,
@@ -31,6 +32,99 @@ const LOCATIONS = {
   counties: ['Douglas', 'Pottawattamie', 'Sarpy'],
   cities: ['Bellevue', 'Bennington', 'Carter Lake', 'Council Bluffs', 'Crescent', 'Gretna', 'La Vista', 'McClelland', 'Offutt AFB', 'Omaha', 'Papillion', 'Ralston', 'Springfield', 'Valley', 'Waterloo'],
 };
+
+function initialSharedState() {
+  const base = {
+    filters: {
+      ...DEFAULT_FILTERS,
+      people: { ...DEFAULT_FILTERS.people },
+      roads: { ...DEFAULT_FILTERS.roads },
+    },
+    visible: { hin: true, safety: false, crashes: false },
+  };
+  if (typeof window === 'undefined') return base;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('shared') !== '1') return base;
+  const startYear = Number(params.get('from'));
+  const endYear = Number(params.get('through'));
+  const location = params.get('location') || '';
+  const validLocations = new Set([
+    ...LOCATIONS.counties.map((name) => `county|${name}`),
+    ...LOCATIONS.cities.map((name) => `city|${name}`),
+  ]);
+  const severityParams = params.getAll('severity');
+  const severities = severityParams.filter((value) => SEVERITIES.some((item) => item.value === value));
+  const people = new Set(params.getAll('people'));
+  const speeds = params.getAll('speed').filter((value) => SPEED_OPTIONS.includes(value));
+  const classes = params.getAll('class').map(Number).filter((value) => FUNCTIONAL_CLASSES.some((item) => item.value === value));
+  const intersectionTypes = params.getAll('intersectionType').filter((value) => INTERSECTION_TYPES.includes(value));
+  const controls = params.getAll('control').filter((value) => CONTROL_OPTIONS.includes(value));
+  const assignment = ['All', 'Segment', 'Junction'].includes(params.get('assignment')) ? params.get('assignment') : base.filters.assignment;
+  const mode = ['All modes', 'Pedestrian', 'Bicycle'].includes(params.get('mode')) ? params.get('mode') : base.filters.mode;
+  const layers = new Set(params.getAll('layer'));
+  const sharedStart = Number.isInteger(startYear) && startYear >= 1900 && startYear <= 2100 ? startYear : base.filters.startYear;
+  const sharedEnd = Number.isInteger(endYear) && endYear >= 1900 && endYear <= 2100 ? endYear : base.filters.endYear;
+  return {
+    filters: {
+      ...base.filters,
+      startYear: Math.min(sharedStart, sharedEnd),
+      endYear: Math.max(sharedStart, sharedEnd),
+      severities: severityParams.includes('none') ? [] : severities.length ? severities : base.filters.severities,
+      location: validLocations.has(location) ? location : '',
+      assignment,
+      mode,
+      people: {
+        impaired: people.has('impaired'), unrestrained: people.has('unrestrained'),
+        speeding: people.has('speeding'), distracted: people.has('distracted'), youngDriver: people.has('youngDriver'),
+      },
+      roads: { speeds, classes, intersectionTypes, controls },
+    },
+    visible: {
+      hin: layers.has('hin'), safety: layers.has('safety'), crashes: layers.has('crashes'),
+    },
+  };
+}
+
+function buildShareUrl(filters, visible, includeParameters) {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  if (!includeParameters) return url.toString();
+  const params = url.searchParams;
+  params.set('shared', '1');
+  params.set('from', String(filters.startYear));
+  params.set('through', String(filters.endYear));
+  if (filters.location) params.set('location', filters.location);
+  if (filters.assignment !== 'All') params.set('assignment', filters.assignment);
+  if (filters.mode !== 'All modes') params.set('mode', filters.mode);
+  if (filters.severities.length) filters.severities.forEach((value) => params.append('severity', value));
+  else params.append('severity', 'none');
+  Object.entries(filters.people).forEach(([key, enabled]) => { if (enabled) params.append('people', key); });
+  filters.roads.speeds.forEach((value) => params.append('speed', value));
+  filters.roads.classes.forEach((value) => params.append('class', String(value)));
+  filters.roads.intersectionTypes.forEach((value) => params.append('intersectionType', value));
+  filters.roads.controls.forEach((value) => params.append('control', value));
+  if (visible.hin) params.append('layer', 'hin');
+  if (visible.safety) params.append('layer', 'safety');
+  if (visible.crashes) params.append('layer', 'crashes');
+  if (!visible.hin && !visible.safety && !visible.crashes) params.append('layer', 'none');
+  return url.toString();
+}
+
+async function copyShareText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const input = document.createElement('textarea');
+  input.value = text;
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.append(input);
+  input.select();
+  document.execCommand('copy');
+  input.remove();
+}
 
 const NETWORK_METRIC_FIELDS = [
   'total_crashes', 'KA_crashes', 'num_K_count', 'num_A_count', 'num_B_count', 'num_C_count',
@@ -236,10 +330,15 @@ function periodTotal(map, ids, startYear, endYear) {
   return total;
 }
 
-function periodNetworkRows(rows, linkedYears, startYear, endYear) {
+function periodNetworkRows(rows, linkedYears, startYear, endYear, qualifyingYears = null) {
   return rows.map((row) => {
     const period = periodTotal(linkedYears, [row.id], startYear, endYear);
     if (!period.crashes) return null;
+    if (qualifyingYears) {
+      const qualification = periodTotal(qualifyingYears, [row.id], startYear, endYear);
+      const qualifyingCrashes = Number(qualification.severity.K || 0) + Number(qualification.severity.A || 0);
+      if (!qualifyingCrashes) return null;
+    }
     return {
       ...row,
       crashes: period.crashes,
@@ -623,10 +722,12 @@ function popupTemplate(kind, crashLayer, filterRef) {
 
 function configureLayers(layers, filterRef) {
   [layers.safetySegments, layers.safetyIntersections, layers.allSafetySegments, layers.allSafetyIntersections, layers.crashes].forEach((layer) => { layer.popupEnabled = true; });
+  const webmapSafetyIntersectionRenderer = layers.safetyIntersections.renderer?.clone?.() || layers.safetyIntersections.renderer;
   layers.safetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', color: BRAND.blue, width: 2.4 } };
   layers.safetyIntersections.renderer = { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: BRAND.yellow, size: 6, outline: { color: BRAND.blue, width: 1.1 } } };
   layers.allSafetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', style: 'solid', color: BRAND.blue, width: 1, cap: 'round', join: 'round' } };
-  layers.allSafetyIntersections.renderer = { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: BRAND.blue, size: 4, outline: { color: 'white', width: .4 } } };
+  layers.allSafetyIntersections.renderer = webmapSafetyIntersectionRenderer || { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: [15, 27, 43, 255], size: 3, outline: { color: [143, 168, 184, 128], width: .9 } } };
+  layers.allSafetyIntersections.opacity = 1;
   const severityRenderer = {
     type: 'unique-value', field: 'severity', orderByClassesEnabled: true,
     defaultSymbol: { type: 'simple-marker', color: BRAND.grey, size: 5, outline: { color: 'white', width: .5 } },
@@ -667,6 +768,7 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
   useEffect(() => {
     let disposed = false;
     let clickHandle;
+    let popupHandle;
     let highlight;
     let sketchHandle;
     let sketchViewModel;
@@ -674,6 +776,8 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
     let selectionToolbar;
     let pointPointerHandler;
     let pointPicking = false;
+    let currentSelectedGraphic = null;
+    let selectionPopupWasVisible = false;
     let selectionHighlights = [];
     const selectedObjectIds = { segment: new Set(), intersection: new Set() };
     let view;
@@ -722,7 +826,6 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
       view.ui.add(new Expand({ view, content: new Search({ view, popupEnabled: false, includeDefaultSources: true }), expanded: false, expandTooltip: 'Search for an address or place', collapseTooltip: 'Close search' }), { position: 'top-right', index: 0 });
       view.ui.add(new Home({ view }), 'top-left');
       view.ui.add(new ScaleBar({ view, unit: 'dual' }), 'bottom-left');
-      view.ui.add(new Expand({ view, content: new LayerList({ view }), group: 'map-tools', expandTooltip: 'Layers', collapseTooltip: 'Close layers' }), 'top-right');
       view.ui.add(new Expand({ view, content: new Legend({ view }), group: 'map-tools', expandTooltip: 'Legend', collapseTooltip: 'Close legend' }), 'top-right');
       sketchViewModel = new SketchViewModel({
         view, layer: selectionLayer,
@@ -738,10 +841,20 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
         const count = selectionToolbar?.querySelector('.selection-count');
         if (count) count.textContent = 'No active selection';
       };
+      const clearPointSelection = (notify = false, closePopup = true) => {
+        highlight?.remove();
+        highlight = null;
+        currentSelectedGraphic = null;
+        selectionPopupWasVisible = false;
+        if (closePopup) view.closePopup();
+        if (notify) callbacks.current.onSelect(null);
+      };
       const applySpatialSelection = async (geometry) => {
         const active = visibleRef.current.safety
           ? [[layers.allSafetySegments, 'segment'], [layers.allSafetyIntersections, 'intersection']]
-          : [[layers.safetySegments, 'segment'], [layers.safetyIntersections, 'intersection']];
+          : visibleRef.current.hin
+            ? [[layers.safetySegments, 'segment'], [layers.safetyIntersections, 'intersection']]
+            : [];
         for (const [layer, kind] of active) {
           const ids = await layer.queryObjectIds({
             geometry, spatialRelationship: 'intersects', where: layer.definitionExpression || '1=1',
@@ -793,23 +906,55 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
       clickHandle = view.on('click', async (event) => {
         const hit = await view.hitTest(event, { include: [layers.safetySegments, layers.safetyIntersections, layers.allSafetySegments, layers.allSafetyIntersections] });
         const result = hit.results.find((item) => item.type === 'graphic');
-        if (!result) return;
+        if (!result) {
+          if (currentSelectedGraphic) clearPointSelection(true);
+          return;
+        }
         const selectedLayer = result.graphic.layer;
         const kind = selectedLayer === layers.safetySegments || selectedLayer === layers.allSafetySegments ? 'segment' : 'intersection';
         const objectId = result.graphic.getObjectId();
+        if (currentSelectedGraphic && currentSelectedGraphic.layer === selectedLayer && currentSelectedGraphic.getObjectId() === objectId) {
+          clearPointSelection(true);
+          return;
+        }
         let selectedGraphic = result.graphic;
         if (objectId != null) {
           const fullResult = await selectedLayer.queryFeatures({ objectIds: [objectId], outFields: ['*'], returnGeometry: true });
           if (fullResult.features.length) selectedGraphic = fullResult.features[0];
         }
         highlight?.remove();
+        currentSelectedGraphic = selectedGraphic;
         highlight = (await view.whenLayerView(selectedLayer)).highlight(selectedGraphic);
+        selectionPopupWasVisible = Boolean(view.popup?.visible);
         callbacks.current.onSelect({ ...normalizeNetworkFeature(selectedGraphic, kind), networkMode: selectedLayer === layers.allSafetySegments || selectedLayer === layers.allSafetyIntersections ? 'safety' : 'hin' });
+      });
+      popupHandle = reactiveUtils.watch(() => view.popup?.visible, (isVisible) => {
+        if (isVisible && currentSelectedGraphic) selectionPopupWasVisible = true;
+        if (!isVisible && currentSelectedGraphic && selectionPopupWasVisible) clearPointSelection(true, false);
       });
       const api = {
         view, layers,
-        clearSelection: () => { highlight?.remove(); view.closePopup(); },
+        clearSelection: () => clearPointSelection(false),
         clearSpatialSelection,
+        zoomSelection: async () => {
+          const selectionGraphics = selectionLayer.graphics.toArray();
+          const selectedGraphic = currentSelectedGraphic || (selectionGraphics.length === 1 ? selectionGraphics[0] : null);
+          if (selectedGraphic) {
+            const geometry = selectedGraphic.geometry;
+            const target = geometry?.type === 'point'
+              ? { target: geometry, zoom: 16 }
+              : geometry?.extent ? geometry.extent.expand(1.45) : selectedGraphic;
+            await view.goTo(target, { duration: 650 }).catch(() => {});
+            return;
+          }
+          if (selectionGraphics.length) {
+            const extent = selectionGraphics.reduce((combined, graphic) => {
+              const graphicExtent = graphic.geometry?.extent;
+              return graphicExtent ? (combined ? combined.union(graphicExtent) : graphicExtent.clone()) : combined;
+            }, null);
+            if (extent) await view.goTo(extent.expand(1.25), { duration: 650 }).catch(() => {});
+          }
+        },
         setPeriodNetworkIds: ({ segment, intersection }) => {
           const current = filterRef.current;
           const segmentWhere = current.assignment === 'Junction' ? '1=0' : buildNetworkWhere(current, 'segment');
@@ -817,7 +962,7 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
           layers.safetySegments.definitionExpression = withObjectIds(segmentWhere, segment);
           layers.safetyIntersections.definitionExpression = withObjectIds(intersectionWhere, intersection);
         },
-        focus: async (record) => { highlight?.remove(); const safety = record.networkMode === 'safety' || Number(record.hin) !== 1; const layer = record.type === 'segment' ? (safety ? layers.allSafetySegments : layers.safetySegments) : (safety ? layers.allSafetyIntersections : layers.safetyIntersections); const result = await layer.queryFeatures({ objectIds: [record.objectId], outFields: ['*'], returnGeometry: true }); if (!result.features.length) return; highlight = (await view.whenLayerView(layer)).highlight(result.features[0]); await view.goTo(result.features[0], { duration: 600 }).catch(() => {}); view.openPopup({ features: result.features, location: result.features[0].geometry.extent?.center || result.features[0].geometry }); },
+        focus: async (record) => { highlight?.remove(); const safety = record.networkMode === 'safety' || Number(record.hin) !== 1; const layer = record.type === 'segment' ? (safety ? layers.allSafetySegments : layers.safetySegments) : (safety ? layers.allSafetyIntersections : layers.safetyIntersections); const result = await layer.queryFeatures({ objectIds: [record.objectId], outFields: ['*'], returnGeometry: true }); if (!result.features.length) return; currentSelectedGraphic = result.features[0]; highlight = (await view.whenLayerView(layer)).highlight(currentSelectedGraphic); await view.goTo(currentSelectedGraphic, { duration: 600 }).catch(() => {}); view.openPopup({ features: result.features, location: currentSelectedGraphic.geometry.extent?.center || currentSelectedGraphic.geometry }); selectionPopupWasVisible = true; },
         zoomLocation: async (value) => {
           const location = parseLocation(value);
           counties.visible = location?.type === 'county'; cities.visible = location?.type === 'city';
@@ -831,7 +976,7 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
       };
       apiRef.current = api; callbacks.current.onReady(api); callbacks.current.onStatus('ready');
     }).catch((error) => { if (!disposed) callbacks.current.onStatus(error.message || 'The map could not be loaded.'); });
-    return () => { disposed = true; clickHandle?.remove(); sketchHandle?.remove(); sketchViewModel?.cancel(); if (view?.container && pointPointerHandler) view.container.removeEventListener('pointerdown', pointPointerHandler, true); highlight?.remove(); selectionHighlights.forEach((item) => item.remove()); apiRef.current?.layers.querySegments?.destroy(); apiRef.current?.layers.queryIntersections?.destroy(); apiRef.current?.layers.queryCrashes?.destroy(); view?.destroy(); };
+    return () => { disposed = true; clickHandle?.remove(); popupHandle?.remove(); sketchHandle?.remove(); sketchViewModel?.cancel(); if (view?.container && pointPointerHandler) view.container.removeEventListener('pointerdown', pointPointerHandler, true); highlight?.remove(); selectionHighlights.forEach((item) => item.remove()); apiRef.current?.layers.querySegments?.destroy(); apiRef.current?.layers.queryIntersections?.destroy(); apiRef.current?.layers.queryCrashes?.destroy(); view?.destroy(); };
   }, []);
 
   useEffect(() => {
@@ -874,11 +1019,11 @@ function ExplorePanel({ filters, setFilters, visible, setVisible, selection, cle
   const toggleSeverity = (value) => patch({ severities: filters.severities.includes(value) ? filters.severities.filter((item) => item !== value) : [...filters.severities, value] });
   return <>
     <section className="panel-section"><h2>Map layers</h2>
-      <Toggle checked={visible.hin} onChange={() => setVisible((v) => ({ ...v, hin: true, safety: false }))} label="High Injury Network" description="HIN roads and intersections" icon={Route} color={BRAND.blue} />
-      <Toggle checked={visible.safety} onChange={() => setVisible((v) => ({ ...v, safety: true, hin: false }))} label="All Safety Network" description="Every road and intersection in the analysis network" icon={ShieldCheck} color={BRAND.teal} />
+      <Toggle checked={visible.hin} onChange={(checked) => setVisible((v) => checked ? { ...v, hin: true, safety: false } : { ...v, hin: false })} label="High Injury Network" description="HIN roads and intersections" icon={Route} color={BRAND.blue} />
+      <Toggle checked={visible.safety} onChange={(checked) => setVisible((v) => checked ? { ...v, safety: true, hin: false } : { ...v, safety: false })} label="All Safety Network" description="Every road and intersection in the analysis network" icon={ShieldCheck} color={BRAND.teal} />
       <Toggle checked={visible.crashes} onChange={(crashes) => setVisible((v) => ({ ...v, crashes }))} label="Crash records" description="Grouped at regional scale; severity records appear as you zoom in" icon={Car} color={BRAND.coral} />
     </section>
-    <section className="panel-section"><h2>Location</h2><label className="field"><span>Select county or city</span><select value={filters.location} onChange={(event) => patch({ location: event.target.value })}><option value="">Entire MAPA region</option><optgroup label="Counties">{LOCATIONS.counties.map((name) => <option key={name} value={`county|${name}`}>{name} County</option>)}</optgroup><optgroup label="Cities">{LOCATIONS.cities.map((name) => <option key={name} value={`city|${name}`}>{name}</option>)}</optgroup></select><ChevronDown size={17} /></label></section>
+    <section className="panel-section"><h2>Location</h2><label className="field"><span>Select county or city</span><select value={filters.location} onChange={(event) => patch({ location: event.target.value })}><option value="">MAPA TMA</option><optgroup label="Counties">{LOCATIONS.counties.map((name) => <option key={name} value={`county|${name}`}>{name} County</option>)}</optgroup><optgroup label="Cities">{LOCATIONS.cities.map((name) => <option key={name} value={`city|${name}`}>{name}</option>)}</optgroup></select><ChevronDown size={17} /></label></section>
     <section className="panel-section assignment-section"><h2>Network assignment</h2><label className="field"><span>Show network and crashes assigned to</span><select value={filters.assignment} onChange={(event) => patch({ assignment: event.target.value })}><option>All</option><option>Segment</option><option>Junction</option></select><ChevronDown size={17} /></label></section>
     {selection && <section className="focus-card"><button onClick={clearSelection} aria-label="Clear selected network feature"><X size={18} /></button><span>Selected {selection.type}</span><h3>{selection.name}</h3><p>{[selection.city, selection.county].filter(Boolean).join(' · ')}</p><div><b>{formatNumber(selection.crashes)}</b><small>{filters.startYear}–{filters.endYear} crashes</small><b>{formatNumber(selection.kaCrashes)}</b><small>fatal + serious crashes</small></div></section>}
     <section className="panel-section"><h2>Crash records</h2>
@@ -986,9 +1131,81 @@ function DataDrawer({ open, setOpen, tab, setTab, rows, loading, onFocus, onExpo
   return <section className={`data-drawer ${open ? 'open' : ''}`}><button className="drawer-handle" onClick={() => setOpen(!open)} aria-expanded={open}><span /><Table2 size={18} /><b>Network table</b><small>{networkLabel} · {formatNumber(rows.length)} filtered {tab === 'segment' ? 'roads' : 'intersections'} · {period}</small><ChevronDown size={19} /></button>{open && <div className="drawer-body"><div className="drawer-tools"><div className="table-tabs"><button className={tab === 'segment' ? 'active' : ''} onClick={() => setTab('segment')}>Roads</button><button className={tab === 'intersection' ? 'active' : ''} onClick={() => setTab('intersection')}>Intersections</button></div><label className="table-search"><SearchIcon size={17} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search the filtered network" /></label><div className="export-menu"><span>Export:</span>{[['csv', 'CSV'], ['shp', 'Shapefile'], ['gpkg', 'GeoPackage']].map(([value, label]) => <button key={value} disabled={Boolean(exporting) || !rows.length} onClick={() => doExport(value)}><Download size={15} />{exporting === value ? 'Preparing…' : label}</button>)}</div></div>{loading ? <div className="table-state">Updating the filtered network…</div> : <div className="table-wrap"><table><thead><tr><th>#</th><th>{tab === 'segment' ? 'Road' : 'Intersection'}</th><th>Location</th><th>HIN</th><th>K+A crashes</th><th>All crashes</th><th>Killed</th><th>Seriously injured</th><th>Nonmotorists</th><th>Bicyclists</th><th>Vehicles</th><th>Speeding</th><th>Distracted</th><th>Impaired / alcohol</th><th>{tab === 'segment' ? 'Miles / class' : 'Control / legs'}</th><th /></tr></thead><tbody>{visibleRows.map((row, index) => <tr key={`${row.type}-${row.objectId}`}><td>{index + 1}</td><td><strong>{row.name}</strong><small>{row.id}</small></td><td>{row.city || '—'}<small>{row.county || '—'}</small></td><td>{row.hin === 1 ? 'Yes' : 'No'}</td><td>{formatNumber(row.kaCrashes)}</td><td>{formatNumber(row.crashes)}</td><td>{formatNumber(row.fatalities)}</td><td>{formatNumber(row.serious)}</td><td>{formatNumber(row.nonmotorists)}</td><td>{formatNumber(row.bicycles)}</td><td>{formatNumber(row.vehicles)}</td><td>{formatNumber(row.speeding)}</td><td>{formatNumber(row.distracted)}</td><td>{formatNumber(row.impaired)}</td><td>{tab === 'segment' ? <>{formatNumber(row.miles, 2)} mi<small>{functionalClassLabel(row.functionalClass)}</small></> : <>{row.control || '—'}<small>{row.lanes ? `${row.lanes} legs` : 'Legs not recorded'}</small></>}</td><td><button onClick={() => onFocus(row)}>Show</button></td></tr>)}</tbody></table>{rows.length > 1000 && <p className="row-limit">Showing the first 1,000 rows. Exports include up to 2,000 filtered features.</p>}</div>}</div>}</section>;
 }
 
+function SelectionSummary({ count, onZoom }) {
+  return <div className="selection-summary" aria-live="polite">
+    <button type="button" onClick={onZoom} disabled={!count} title={count ? 'Zoom to selected features' : 'No selected features'} aria-label="Zoom to selected features"><LocateFixed size={16} /></button>
+    <span>Selected features: <b>{formatNumber(count)}</b></span>
+  </div>;
+}
+
+function ShareDialog({ filters, visible }) {
+  const [open, setOpen] = useState(false);
+  const [includeParameters, setIncludeParameters] = useState(true);
+  const [copied, setCopied] = useState('');
+  const [showQr, setShowQr] = useState(false);
+  const [qrUrl, setQrUrl] = useState('');
+  const shareUrl = useMemo(() => buildShareUrl(filters, visible, includeParameters), [filters, visible, includeParameters]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [open]);
+
+  useEffect(() => {
+    if (!showQr) return;
+    let current = true;
+    QRCode.toDataURL(shareUrl, { width: 220, margin: 1, color: { dark: BRAND.teal, light: '#ffffff' } })
+      .then((value) => { if (current) setQrUrl(value); })
+      .catch(() => { if (current) setQrUrl(''); });
+    return () => { current = false; };
+  }, [shareUrl, showQr]);
+
+  const copy = async (text, label) => {
+    await copyShareText(text);
+    setCopied(label);
+    window.setTimeout(() => setCopied(''), 1800);
+  };
+  const openShareTarget = (url) => {
+    const popup = window.open(url, '_blank', 'noopener,noreferrer,width=720,height=620');
+    if (popup) popup.opener = null;
+  };
+  const encodedUrl = encodeURIComponent(shareUrl);
+  const encodedTitle = encodeURIComponent('MAPA High Injury Network');
+  const embedCode = `<iframe src="${shareUrl.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}" title="MAPA High Injury Network" width="100%" height="720" loading="lazy"></iframe>`;
+  const targets = [
+    ['email', 'Email', <Mail size={21} />, `mailto:?subject=${encodedTitle}&body=${encodedUrl}`],
+    ['facebook', 'Facebook', 'f', `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`],
+    ['x', 'X', 'X', `https://x.com/intent/post?url=${encodedUrl}&text=${encodedTitle}`],
+    ['pinterest', 'Pinterest', 'p', `https://www.pinterest.com/pin/create/button/?url=${encodedUrl}&description=${encodedTitle}`],
+    ['linkedin', 'LinkedIn', 'in', `https://www.linkedin.com/sharing/share-offsite/?url=${encodedUrl}`],
+  ];
+
+  return <>
+    <button type="button" className="share-trigger" onClick={() => setOpen(true)}><Share2 size={17} />Share</button>
+    {open && <div className="share-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+      <section className="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title">
+        <header><h2 id="share-title">Share</h2><button type="button" onClick={() => setOpen(false)} aria-label="Close share dialog"><X size={20} /></button></header>
+        <div className="share-link"><input value={shareUrl} readOnly aria-label="Share URL" /><button type="button" onClick={() => copy(shareUrl, 'link')} title="Copy link" aria-label="Copy link"><Copy size={18} /></button></div>
+        <label className="share-check"><input type="checkbox" checked={includeParameters} onChange={(event) => setIncludeParameters(event.target.checked)} />Include active filters and visible layers</label>
+        <div className="share-options">
+          <button type="button" className="share-option embed" onClick={() => copy(embedCode, 'embed')}><Code2 size={22} /><span>Embed</span></button>
+          <button type="button" className="share-option qr" onClick={() => setShowQr((value) => !value)}><QrCode size={22} /><span>QR code</span></button>
+          {navigator.share && <button type="button" className="share-option device" onClick={() => navigator.share({ title: 'MAPA High Injury Network', url: shareUrl }).catch(() => {})}><Share2 size={22} /><span>Device</span></button>}
+          {targets.map(([key, label, icon, url]) => <button type="button" key={key} className={`share-option ${key}`} onClick={() => openShareTarget(url)}><b>{icon}</b><span>{label}</span></button>)}
+        </div>
+        {showQr && <div className="share-qr">{qrUrl ? <img src={qrUrl} alt="QR code for this shared map" /> : <span>Preparing QR code…</span>}</div>}
+        {copied && <p className="share-confirm" role="status">{copied === 'embed' ? 'Embed code copied.' : 'Link copied.'}</p>}
+      </section>
+    </div>}
+  </>;
+}
+
 export default function App() {
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
-  const [visible, setVisible] = useState({ hin: true, safety: false, crashes: false });
+  const [sharedState] = useState(initialSharedState);
+  const [filters, setFilters] = useState(sharedState.filters);
+  const [visible, setVisible] = useState(sharedState.visible);
   const [yearMax, setYearMax] = useState(YEAR_MAX);
   const [leftTab, setLeftTab] = useState('explore');
   const [mobilePanel, setMobilePanel] = useState('map');
@@ -1061,8 +1278,17 @@ export default function App() {
         const baseSegmentWhere = filters.assignment === 'Junction' ? '1=0' : buildNetworkWhere(baseFilters, 'segment', { hinOnly: false });
         const baseIntersectionWhere = filters.assignment === 'Segment' ? '1=0' : buildNetworkWhere(baseFilters, 'intersection', { hinOnly: false });
         const relationshipFilters = { ...filters, startYear: YEAR_MIN, endYear: yearMax };
+        const qualificationFilters = {
+          ...DEFAULT_FILTERS,
+          location: filters.location,
+          assignment: filters.assignment,
+          startYear: YEAR_MIN,
+          endYear: yearMax,
+          severities: ['K', 'A'],
+        };
         const currentCrashWhere = buildCrashWhere(filters);
         const relationshipCrashWhere = buildCrashWhere(relationshipFilters);
+        const qualificationCrashWhere = buildCrashWhere(qualificationFilters);
         const safetyMode = visible.safety;
         const [segments, intersections, baseRoadUnits, baseIntersectionUnits, baseRoadCrashes, baseIntersectionCrashes, safetyRoadUnits, safetyIntersectionUnits, safetyRoadYears, safetyIntersectionYears] = await Promise.all([
           queryNetworkRows(mapApi.layers.querySegments, segmentWhere, 'segment'),
@@ -1076,13 +1302,15 @@ export default function App() {
           safetyMode ? queryCrashesByYear(mapApi.layers.queryCrashes, currentCrashWhere, 'Segment') : Promise.resolve(null),
           safetyMode ? queryCrashesByYear(mapApi.layers.queryCrashes, currentCrashWhere, 'Junction') : Promise.resolve(null),
         ]);
-        const [segmentYears, intersectionYears] = await Promise.all([
+        const [segmentYears, intersectionYears, segmentQualificationYears, intersectionQualificationYears] = await Promise.all([
           queryLinkedByYear(mapApi.layers.queryCrashes, segments.map((row) => row.id), 'assigned_segment_id', relationshipCrashWhere),
           queryLinkedByYear(mapApi.layers.queryCrashes, intersections.map((row) => row.id), 'assigned_junction_id', relationshipCrashWhere),
+          queryLinkedByYear(mapApi.layers.queryCrashes, segments.map((row) => row.id), 'assigned_segment_id', qualificationCrashWhere),
+          queryLinkedByYear(mapApi.layers.queryCrashes, intersections.map((row) => row.id), 'assigned_junction_id', qualificationCrashWhere),
         ]);
         if (cancelled) return;
-        const periodSegments = periodNetworkRows(segments, segmentYears, filters.startYear, filters.endYear);
-        const periodIntersections = periodNetworkRows(intersections, intersectionYears, filters.startYear, filters.endYear);
+        const periodSegments = periodNetworkRows(segments, segmentYears, filters.startYear, filters.endYear, segmentQualificationYears);
+        const periodIntersections = periodNetworkRows(intersections, intersectionYears, filters.startYear, filters.endYear, intersectionQualificationYears);
         const [activeSegments, activeIntersections] = safetyMode ? await Promise.all([
           queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.querySegments, filters, 'segment'),
           queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.queryIntersections, filters, 'intersection'),
@@ -1153,13 +1381,16 @@ export default function App() {
   };
 
   const drawerRows = networkRows[drawerTab];
+  const selectedFeatureCount = spatialSelection
+    ? spatialSelection.segment.length + spatialSelection.intersection.length
+    : selection ? 1 : 0;
   const hasNotice = mapStatus !== 'ready' || Boolean(analyticsError);
   const statusMessage = mapStatus === 'loading' ? 'The web map and ArcGIS layers are still loading.' : analyticsError || (mapStatus === 'ready' ? 'The map and network analytics are connected to the near-live NDOT and Iowa DOT database.' : String(mapStatus));
   return <main className={`app mobile-${mobilePanel}`}>
-    <header className="topbar"><a className="brand-link" href="https://www.mapacog.org" target="_blank" rel="noreferrer" aria-label="Visit the MAPA website"><img src="./mapa-logo.png" alt="Metropolitan Area Planning Agency" /></a><div className="product-name"><span>Safety planning</span><h1>High Injury Network</h1></div><div className="top-actions"><div className="status-wrap" onMouseEnter={() => setStatusHovered(true)} onMouseLeave={() => setStatusHovered(false)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setStatusPinned(false); }}><button className={`status-button ${hasNotice ? 'notice' : ''}`} onClick={() => setStatusPinned((current) => !current)} onFocus={() => setStatusPinned(true)} onKeyDown={(event) => { if (event.key === 'Escape') { setStatusPinned(false); setStatusHovered(false); event.currentTarget.blur(); } }} aria-expanded={showStatus} aria-controls="data-status-popover"><CircleAlert size={16} />{mapStatus === 'loading' ? 'Loading data' : hasNotice ? 'Data notice' : 'Data is current'}</button>{showStatus && <div id="data-status-popover" className="status-popover"><strong>{hasNotice ? 'Data notice' : 'Data is current'}</strong><p>{statusMessage}</p><small>This control reports connection or query issues; it does not change the map.</small></div>}</div><button onClick={reset}><RefreshCcw size={17} />Reset filters</button><button className="mobile-menu" onClick={() => setMobilePanel(mobilePanel === 'filters' ? 'map' : 'filters')}><Menu size={22} /></button></div></header>
+    <header className="topbar"><a className="brand-link" href="https://www.mapacog.org" target="_blank" rel="noreferrer" aria-label="Visit the MAPA website"><img src="./mapa-logo.png" alt="Metropolitan Area Planning Agency" /></a><div className="product-name"><span>Safety planning</span><h1>High Injury Network</h1></div><div className="top-actions"><div className="status-wrap" onMouseEnter={() => setStatusHovered(true)} onMouseLeave={() => setStatusHovered(false)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setStatusPinned(false); }}><button className={`status-button ${hasNotice ? 'notice' : ''}`} onClick={() => setStatusPinned((current) => !current)} onFocus={() => setStatusPinned(true)} onKeyDown={(event) => { if (event.key === 'Escape') { setStatusPinned(false); setStatusHovered(false); event.currentTarget.blur(); } }} aria-expanded={showStatus} aria-controls="data-status-popover"><CircleAlert size={16} />{mapStatus === 'loading' ? 'Loading data' : hasNotice ? 'Data notice' : 'Data is current'}</button>{showStatus && <div id="data-status-popover" className="status-popover"><strong>{hasNotice ? 'Data notice' : 'Data is current'}</strong><p>{statusMessage}</p><small>This control reports connection or query issues; it does not change the map.</small></div>}</div><ShareDialog filters={filters} visible={visible} /><button onClick={reset}><RefreshCcw size={17} />Reset filters</button><button className="mobile-menu" onClick={() => setMobilePanel(mobilePanel === 'filters' ? 'map' : 'filters')}><Menu size={22} /></button></div></header>
     <div className={`workspace ${leftCollapsed ? 'left-collapsed' : ''}`}>
       <aside className="left-panel"><nav><button className={leftTab === 'explore' ? 'active' : ''} onClick={() => setLeftTab('explore')}><Layers3 size={18} />Explore</button><button className={leftTab === 'filters' ? 'active' : ''} onClick={() => setLeftTab('filters')}><Filter size={18} />Filters</button></nav><div className="panel-scroll">{leftTab === 'explore' ? <ExplorePanel filters={filters} setFilters={setFilters} visible={visible} setVisible={setVisible} selection={selection} clearSelection={clearSelection} yearMax={yearMax} /> : <FiltersPanel filters={filters} setFilters={setFilters} />}</div></aside>
-      <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); if (window.innerWidth < 840) setMobilePanel('insights'); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><div className="map-key"><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span><span><i className="safety" />Safety network</span><span><i className="crash" />Crash clusters / severity</span></div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={visible.safety ? 'All Safety Network' : 'High Injury Network'} /></section>
+      <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { if (!record) { setSelection(null); return; } const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); if (window.innerWidth < 840) setMobilePanel('insights'); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><SelectionSummary count={selectedFeatureCount} onZoom={() => mapApi?.zoomSelection()} /><div className="map-key">{visible.hin && <><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span></>}{visible.safety && <span><i className="safety" />Safety network</span>}{visible.crashes && <span><i className="crash" />Crash clusters / severity</span>}</div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={visible.safety ? 'All Safety Network' : 'High Injury Network'} /></section>
       <aside className="insights-panel"><div className="insights-scroll"><PerformancePanel performance={performance} loading={analyticsLoading} impacts={impacts} onFocusImpact={focusImpact} period={`${filters.startYear}–${filters.endYear}`} networkMode={visible.safety ? 'safety' : 'hin'} assignment={filters.assignment} selectionCount={spatialSelection ? spatialSelection.segment.length + spatialSelection.intersection.length : 0} /></div></aside>
     </div>
     <nav className="mobile-nav"><button className={mobilePanel === 'map' ? 'active' : ''} onClick={() => setMobilePanel('map')}><MapIcon size={21} />Map</button><button className={mobilePanel === 'filters' ? 'active' : ''} onClick={() => setMobilePanel('filters')}><SlidersHorizontal size={21} />Explore</button><button className={mobilePanel === 'insights' ? 'active' : ''} onClick={() => setMobilePanel('insights')}><BarChart3 size={21} />Insights</button><button className={drawerOpen ? 'active' : ''} onClick={() => { setDrawerOpen(true); setMobilePanel('map'); }}><Table2 size={21} />Data</button></nav>
