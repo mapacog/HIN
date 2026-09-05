@@ -140,7 +140,7 @@ const NETWORK_METRIC_FIELDS = [
   'HIN',
 ];
 const SEGMENT_OUT_FIELDS = ['OBJECTID', 'TFL_UID', 'street_name', 'city_name', 'county_text', 'Segment_Miles', 'maxspeed', 'HPMS_F_SYSTEM', 'URBAN_RURAL', 'lanes', 'surface', 'one_way', 'ADJ_AADT2025', ...NETWORK_METRIC_FIELDS];
-const INTERSECTION_OUT_FIELDS = ['OBJECTID', 'int_ID', 'INTERSECTI', 'CITY', 'COUNTY', 'number_of_legs', 'traffic_control_type', 'intersection_lighting', 'lighting', 'maxspeed', 'HPMS_F_SYSTEM', 'URBAN_RURAL', ...NETWORK_METRIC_FIELDS];
+const INTERSECTION_OUT_FIELDS = ['OBJECTID', 'int_ID', 'INTERSECTI', 'CITY', 'COUNTY', 'Total_25', 'number_of_legs', 'traffic_control_type', 'intersection_lighting', 'lighting', 'maxspeed', 'HPMS_F_SYSTEM', 'URBAN_RURAL', ...NETWORK_METRIC_FIELDS];
 const CRASH_POPUP_FIELDS = [
   'OBJECTID', 'crash_id', 'severity', 'date', 'day', 'time', 'city_name', 'county',
   'num_K_count', 'num_A_count', 'num_B_count', 'num_C_count', 'num_veh', 'num_veh_count',
@@ -706,9 +706,10 @@ function popupTemplate(kind, crashLayer, filterRef) {
             ['2025 AADT', numeric(a, 'ADJ_AADT2025') ? Math.round(numeric(a, 'ADJ_AADT2025')).toLocaleString() : 'Not recorded'],
           ]
           : [
-            ['Network ID', a.int_ID], ['HIN', numeric(a, 'HIN') === 1 ? 'Yes' : 'No'],
-            ['Location', [a.CITY, String(a.COUNTY || '').replace(/ County$/i, '')].filter(Boolean).join(', ')],
-            ['Traffic control', fieldText(a.traffic_control_type)],
+             ['Network ID', a.int_ID], ['HIN', numeric(a, 'HIN') === 1 ? 'Yes' : 'No'],
+             ['Location', [a.CITY, String(a.COUNTY || '').replace(/ County$/i, '')].filter(Boolean).join(', ')],
+             ['2025 intersection AADT', numeric(a, 'Total_25') ? Math.round(numeric(a, 'Total_25')).toLocaleString() : 'Not recorded'],
+             ['Traffic control', fieldText(a.traffic_control_type)],
             ['Intersection type', a.number_of_legs ? `${a.number_of_legs} legs` : 'Not recorded'],
             ['Lighting', fieldText(a.intersection_lighting)], ['Posted speed', fieldText(a.maxspeed)],
             ['Functional class', functionalClassLabel(a.HPMS_F_SYSTEM)], ['Setting', fieldText(a.URBAN_RURAL)],
@@ -723,7 +724,8 @@ function popupTemplate(kind, crashLayer, filterRef) {
 function configureLayers(layers, filterRef) {
   [layers.safetySegments, layers.safetyIntersections, layers.allSafetySegments, layers.allSafetyIntersections, layers.crashes].forEach((layer) => { layer.popupEnabled = true; });
   const webmapSafetyIntersectionRenderer = layers.safetyIntersections.renderer?.clone?.() || layers.safetyIntersections.renderer;
-  layers.safetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', color: BRAND.blue, width: 2.4 } };
+  layers.safetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', color: BRAND.teal, width: 2.4 } };
+  layers.safetySegments.opacity = 1;
   layers.safetyIntersections.renderer = { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: BRAND.yellow, size: 6, outline: { color: BRAND.blue, width: 1.1 } } };
   layers.allSafetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', style: 'solid', color: BRAND.blue, width: 1, cap: 'round', join: 'round' } };
   layers.allSafetyIntersections.renderer = webmapSafetyIntersectionRenderer || { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: [15, 27, 43, 255], size: 3, outline: { color: [143, 168, 184, 128], width: .9 } } };
@@ -775,6 +777,13 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
       if (disposed) return;
       const unwanted = webmap.allLayers.filter((layer) => /^HIN - /.test(layer.title || '') || /^NM Severity - Chart$/i.test(layer.title || '') || /High (Priority|Risk) Network|Community Safety Concerns/i.test(layer.title || ''));
       unwanted.forEach((layer) => { if (layer.parent?.remove) layer.parent.remove(layer); else webmap.remove(layer); });
+      const disableBasemapPopups = (layer) => {
+        if ('popupEnabled' in layer) layer.popupEnabled = false;
+        layer.layers?.forEach(disableBasemapPopups);
+        layer.sublayers?.forEach((sublayer) => { if ('popupEnabled' in sublayer) sublayer.popupEnabled = false; });
+      };
+      webmap.basemap?.baseLayers?.forEach(disableBasemapPopups);
+      webmap.basemap?.referenceLayers?.forEach(disableBasemapPopups);
       view = new MapView({ container: node.current, map: webmap, extent: MAP_EXTENT, constraints: { snapToZoom: false }, popup: { dockEnabled: false, alignment: 'auto', dockOptions: { buttonEnabled: false } }, ui: { components: ['attribution', 'zoom'] } });
       await view.when();
       const layers = {

@@ -134,7 +134,7 @@ button { color: inherit; }
 .selection-tools small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
 .map-key { position: absolute; z-index: 5; left: 50%; bottom: 57px; display: flex; gap: 16px; padding: 9px 13px; transform: translateX(-50%); background: rgba(255,255,255,.96); border: 1px solid #d4dcda; box-shadow: 0 5px 18px rgba(28,52,56,.13); font-size: 12px; white-space: nowrap; }
 .map-key span { display: flex; align-items: center; gap: 7px; }
-.map-key i.line { width: 24px; border-top: 4px solid var(--blue); }
+.map-key i.line { width: 24px; border-top: 4px solid var(--teal); }
 .map-key i.intersection { width: 10px; height: 10px; border-radius: 50%; background: var(--yellow); border: 2px solid var(--blue); }
 .map-key i.safety { width: 22px; border-top: 2px solid var(--teal); opacity: .65; }
 .map-key i.crash { width: 9px; height: 9px; border-radius: 50%; background: var(--coral); }
