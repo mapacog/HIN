@@ -27,6 +27,7 @@ function peopleClauses(people = {}, target = 'network') {
 }
 
 function modeClause(mode) {
+  if (mode === 'Nonmotorist') return 'nonmotorist_counted <> 0';
   if (mode === 'Bicycle') return '(nonmotorist_counted <> 0 AND num_bike <> 0)';
   if (mode === 'Pedestrian') return '(nonmotorist_counted <> 0 AND (num_bike IS NULL OR num_bike = 0))';
   return null;

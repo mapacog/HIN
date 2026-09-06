@@ -26,7 +26,8 @@ test('trend compares 2021–2025 with 2018–2022 and excludes 2026', () => {
   assert.equal(classifyTrend([2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025].map((year) => ({ year, count: 3 }))), 'About the same');
 });
 
-test('pedestrian and bicycle modes always require a counted nonmotorist', () => {
+test('nonmotorist, pedestrian, and bicycle modes always require a counted nonmotorist', () => {
+  assert.match(buildCrashWhere({ ...base, mode: 'Nonmotorist' }), /nonmotorist_counted <> 0/);
   assert.match(buildCrashWhere({ ...base, mode: 'Bicycle' }), /nonmotorist_counted <> 0 AND num_bike <> 0/);
   assert.match(buildCrashWhere({ ...base, mode: 'Pedestrian' }), /nonmotorist_counted <> 0/);
 });

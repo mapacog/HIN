@@ -13,7 +13,7 @@ import SketchViewModel from '@arcgis/core/widgets/Sketch/SketchViewModel.js';
 import * as reactiveUtils from '@arcgis/core/core/reactiveUtils.js';
 import QRCode from 'qrcode';
 import {
-  BarChart3, Bike, Car, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Code2, Copy, Download, Filter, Footprints,
+  Accessibility, BarChart3, Bike, Car, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Code2, Copy, Download, Filter, Footprints,
   Layers3, LocateFixed, Mail, Map as MapIcon, Menu, QrCode, RefreshCcw, Route, Search as SearchIcon,
   Share2, ShieldCheck, SlidersHorizontal, Table2, X,
 } from 'lucide-react';
@@ -60,7 +60,7 @@ function initialSharedState() {
   const intersectionTypes = params.getAll('intersectionType').filter((value) => INTERSECTION_TYPES.includes(value));
   const controls = params.getAll('control').filter((value) => CONTROL_OPTIONS.includes(value));
   const assignment = ['All', 'Segment', 'Junction'].includes(params.get('assignment')) ? params.get('assignment') : base.filters.assignment;
-  const mode = ['All modes', 'Pedestrian', 'Bicycle'].includes(params.get('mode')) ? params.get('mode') : base.filters.mode;
+  const mode = ['All modes', 'Nonmotorist', 'Pedestrian', 'Bicycle'].includes(params.get('mode')) ? params.get('mode') : base.filters.mode;
   const layers = new Set(params.getAll('layer'));
   const sharedStart = Number.isInteger(startYear) && startYear >= 1900 && startYear <= 2100 ? startYear : base.filters.startYear;
   const sharedEnd = Number.isInteger(endYear) && endYear >= 1900 && endYear <= 2100 ? endYear : base.filters.endYear;
@@ -952,12 +952,16 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
             if (extent) await view.goTo(extent.expand(1.25), { duration: 650 }).catch(() => {});
           }
         },
-        setPeriodNetworkIds: ({ segment, intersection }) => {
+        setPeriodNetworkIds: ({ hinSegment, hinIntersection, safetySegment, safetyIntersection }) => {
           const current = filterRef.current;
-          const segmentWhere = current.assignment === 'Junction' ? '1=0' : buildNetworkWhere(current, 'segment');
-          const intersectionWhere = current.assignment === 'Segment' ? '1=0' : buildNetworkWhere(current, 'intersection');
-          layers.safetySegments.definitionExpression = withObjectIds(segmentWhere, segment);
-          layers.safetyIntersections.definitionExpression = withObjectIds(intersectionWhere, intersection);
+          const hinSegmentWhere = current.assignment === 'Junction' ? '1=0' : buildNetworkWhere(current, 'segment');
+          const hinIntersectionWhere = current.assignment === 'Segment' ? '1=0' : buildNetworkWhere(current, 'intersection');
+          const safetySegmentWhere = current.assignment === 'Junction' ? '1=0' : buildNetworkWhere(current, 'segment', { hinOnly: false });
+          const safetyIntersectionWhere = current.assignment === 'Segment' ? '1=0' : buildNetworkWhere(current, 'intersection', { hinOnly: false });
+          layers.safetySegments.definitionExpression = withObjectIds(hinSegmentWhere, hinSegment);
+          layers.safetyIntersections.definitionExpression = withObjectIds(hinIntersectionWhere, hinIntersection);
+          layers.allSafetySegments.definitionExpression = withObjectIds(safetySegmentWhere, safetySegment);
+          layers.allSafetyIntersections.definitionExpression = withObjectIds(safetyIntersectionWhere, safetyIntersection);
         },
         focus: async (record) => { highlight?.remove(); const safety = record.networkMode === 'safety' || Number(record.hin) !== 1; const layer = record.type === 'segment' ? (safety ? layers.allSafetySegments : layers.safetySegments) : (safety ? layers.allSafetyIntersections : layers.safetyIntersections); const result = await layer.queryFeatures({ objectIds: [record.objectId], outFields: ['*'], returnGeometry: true }); if (!result.features.length) return; currentSelectedGraphic = result.features[0]; highlight = (await view.whenLayerView(layer)).highlight(currentSelectedGraphic); await view.goTo(currentSelectedGraphic, { duration: 600 }).catch(() => {}); view.openPopup({ features: result.features, location: currentSelectedGraphic.geometry.extent?.center || currentSelectedGraphic.geometry }); selectionPopupWasVisible = true; },
         zoomLocation: async (value) => {
@@ -983,6 +987,10 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
     api.layers.safetyIntersections.definitionExpression = filters.assignment === 'Segment' ? '1=0' : buildNetworkWhere(filters, 'intersection');
     api.layers.allSafetySegments.definitionExpression = filters.assignment === 'Junction' ? '1=0' : buildNetworkWhere(filters, 'segment', { hinOnly: false });
     api.layers.allSafetyIntersections.definitionExpression = filters.assignment === 'Segment' ? '1=0' : buildNetworkWhere(filters, 'intersection', { hinOnly: false });
+  }, [filters]);
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return;
     api.layers.crashes.definitionExpression = buildCrashWhere(filters, selection);
   }, [filters, selection]);
   useEffect(() => { const api = apiRef.current; if (api) { api.layers.safetySegments.visible = visible.hin; api.layers.safetyIntersections.visible = visible.hin; api.layers.allSafetySegments.visible = visible.safety; api.layers.allSafetyIntersections.visible = visible.safety; api.clearSpatialSelection(); } }, [visible.hin, visible.safety]);
@@ -1024,7 +1032,7 @@ function ExplorePanel({ filters, setFilters, visible, setVisible, selection, cle
     <section className="panel-section assignment-section"><h2>Network assignment</h2><label className="field"><span>Show network and crashes assigned to</span><select value={filters.assignment} onChange={(event) => patch({ assignment: event.target.value })}><option>All</option><option>Segment</option><option>Junction</option></select><ChevronDown size={17} /></label></section>
     {selection && <section className="focus-card"><button onClick={clearSelection} aria-label="Clear selected network feature"><X size={18} /></button><span>Selected {selection.type}</span><h3>{selection.name}</h3><p>{[selection.city, selection.county].filter(Boolean).join(' · ')}</p><div><b>{formatNumber(selection.crashes)}</b><small>{filters.startYear}–{filters.endYear} crashes</small><b>{formatNumber(selection.kaCrashes)}</b><small>fatal + serious crashes</small></div></section>}
     <section className="panel-section"><h2>Crash records</h2>
-      <div className="mode-control">{[['All modes', Car], ['Pedestrian', Footprints], ['Bicycle', Bike]].map(([mode, Icon]) => <button type="button" key={mode} className={filters.mode === mode ? 'active' : ''} onClick={() => patch({ mode })}><Icon size={17} />{mode}</button>)}</div>
+      <div className="mode-control">{[['All modes', Car], ['Nonmotorist', Accessibility], ['Pedestrian', Footprints], ['Bicycle', Bike]].map(([mode, Icon]) => <button type="button" key={mode} className={filters.mode === mode ? 'active' : ''} onClick={() => patch({ mode })}><Icon size={17} />{mode}</button>)}</div>
       <div className="period-row"><label><span>From</span><select value={filters.startYear} onChange={(e) => patch({ startYear: Math.min(Number(e.target.value), filters.endYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label><span>—</span><label><span>Through</span><select value={filters.endYear} onChange={(e) => patch({ endYear: Math.max(Number(e.target.value), filters.startYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label></div>
       <div className="severity-list">{SEVERITIES.map((item) => <button type="button" key={item.value} className={filters.severities.includes(item.value) ? 'active' : ''} onClick={() => toggleSeverity(item.value)} style={{ '--severity': item.color }}><i />{item.label}<span>{item.short}</span></button>)}</div>
     </section>
@@ -1316,8 +1324,10 @@ export default function App() {
         const selectedSegments = spatialSelection ? activeSegments.filter((row) => spatialSelection.segment.includes(Number(row.objectId))) : activeSegments;
         const selectedIntersections = spatialSelection ? activeIntersections.filter((row) => spatialSelection.intersection.includes(Number(row.objectId))) : activeIntersections;
         mapApi.setPeriodNetworkIds({
-          segment: periodSegments.map((row) => row.objectId),
-          intersection: periodIntersections.map((row) => row.objectId),
+          hinSegment: periodSegments.map((row) => row.objectId),
+          hinIntersection: periodIntersections.map((row) => row.objectId),
+          safetySegment: activeSegments.map((row) => row.objectId),
+          safetyIntersection: activeIntersections.map((row) => row.objectId),
         });
         const selectedHinSegments = spatialSelection ? periodSegments.filter((row) => spatialSelection.segment.includes(Number(row.objectId))) : periodSegments;
         const selectedHinIntersections = spatialSelection ? periodIntersections.filter((row) => spatialSelection.intersection.includes(Number(row.objectId))) : periodIntersections;
