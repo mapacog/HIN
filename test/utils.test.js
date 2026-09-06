@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCrashWhere, buildNetworkWhere, classifyTrend, escapeSqlLiteral,
+  buildCrashWhere, buildNetworkWhere, classifyTrend, concentrationRatio, escapeSqlLiteral,
   normalizeNetworkFeature, parseLocation, rateRatio, toCsv,
 } from '../src/utils.js';
 
@@ -68,6 +68,11 @@ test('normalizes a safety-network intersection row', () => {
 });
 
 test('computes displayed-vs-other rate ratios', () => assert.equal(rateRatio(20, 10, 30, 30), 4));
+
+test('computes a selected-network concentration against the full network average', () => {
+  assert.equal(concentrationRatio(20, 10, 40, 100), 5);
+  assert.equal(concentrationRatio(4, 10, 40, 100), null);
+});
 
 test('creates safe CSV output', () => {
   const csv = toCsv([{ city: 'Omaha', note: 'Rain, "heavy"' }], [{ field: 'city', label: 'City' }, { field: 'note', label: 'Note' }]);

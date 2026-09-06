@@ -90,6 +90,18 @@ export function rateRatio(selectedEvents, selectedUnits, allEvents, allUnits) {
   return selectedRate / otherRate;
 }
 
+export function concentrationRatio(selectedEvents, selectedUnits, allEvents, allUnits, minimumEvents = 5) {
+  const events = Number(selectedEvents || 0);
+  const units = Number(selectedUnits || 0);
+  const totalEvents = Number(allEvents || 0);
+  const totalUnits = Number(allUnits || 0);
+  if (events < minimumEvents || units <= 0 || totalEvents <= 0 || totalUnits <= 0) return null;
+  const eventShare = events / totalEvents;
+  const networkShare = units / totalUnits;
+  if (!Number.isFinite(eventShare) || !Number.isFinite(networkShare) || networkShare <= 0) return null;
+  return eventShare / networkShare;
+}
+
 export function toCsv(records, columns) {
   const escape = (value) => {
     if (value == null) return '';

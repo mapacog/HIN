@@ -82,6 +82,8 @@ button { color: inherit; }
 .focus-card > div b { color: var(--yellow); font: 600 21px Oswald, sans-serif; }
 .focus-card > div small { align-self: center; color: white; font-size: 12px; }
 
+.mobile-panel-guidance { display: none; }
+
 .field { position: relative; display: block; margin-top: 14px; }
 .field > span, .period-row label > span { display: block; margin-bottom: 7px; color: #555d5b; font-size: 13px; font-weight: 700; }
 .field select, .period-row select { width: 100%; height: 44px; padding: 0 38px 0 12px; appearance: none; color: #343a39; background: white; border: 1px solid #bfc9c7; border-radius: 2px; outline: none; }
@@ -224,7 +226,10 @@ button { color: inherit; }
 .network-profile span b { display: block; margin-bottom: 3px; color: var(--blue); font: 500 20px Oswald, sans-serif; }
 .comparison { padding: 22px 21px 25px; }
 .comparison > h3 { margin: 0 0 5px; text-align: center; font: 600 20px Oswald, sans-serif; text-transform: uppercase; }
-.comparison > p { margin: 0 0 18px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.4; }
+.comparison > p { margin: 9px 0 18px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.4; }
+.comparison-method { display: grid; gap: 2px; margin: 13px 0 0; padding: 10px 12px; text-align: left; background: #f2f7f6; border-left: 4px solid var(--blue); }
+.comparison-method strong { color: var(--teal); font: 600 14px Oswald, sans-serif; letter-spacing: .035em; text-transform: uppercase; }
+.comparison-method span { color: #606967; font-size: 12px; line-height: 1.35; }
 .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .comparison-grid article { padding: 15px 13px; background: #f2f7f6; border-top: 4px solid var(--mint); }
 .comparison-grid h4 { margin: 0 0 8px; color: var(--teal); font: 600 16px Oswald, sans-serif; text-transform: uppercase; }
@@ -355,6 +360,8 @@ button { color: inherit; }
   .left-panel > nav { height: 58px; }
   .left-panel .panel-scroll { height: calc(100% - 58px); }
   .panel-section { padding: 23px 19px; }
+  .mobile-panel-guidance { display: flex; align-items: flex-start; gap: 10px; margin: 12px 16px 0; padding: 12px 13px; color: #31565d; background: #eef7f5; border: 1px solid var(--mint); border-left: 4px solid var(--blue); font-size: 13px; line-height: 1.4; }
+  .mobile-panel-guidance svg { flex: 0 0 auto; color: var(--blue); animation: guidance-pulse 1.1s ease-in-out 3 alternate; }
   .insights-scroll { padding-bottom: 20px; }
   .mobile-nav { z-index: 40; display: grid; grid-template-columns: repeat(4, 1fr); background: white; border-top: 1px solid #cbd5d3; box-shadow: 0 -5px 18px rgba(17,48,53,.11); }
   .mobile-nav button { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: white; color: #68716f; font-size: 11px; font-weight: 700; }
@@ -369,7 +376,8 @@ button { color: inherit; }
   .share-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .drawer-handle { height: 54px; border-bottom: 1px solid var(--line); }
   .drawer-handle > span { display: none; }
-  .drawer-body { height: calc(100% - 54px); }
+  .drawer-body { height: calc(100% - 54px); grid-template-rows: auto auto minmax(0, 1fr); }
+  .drawer-body::before { content: 'Use the arrow above to collapse the Network Table, then choose Map, Explore, or Insights below.'; display: block; padding: 9px 12px; color: #31565d; background: #eef7f5; border-bottom: 1px solid var(--mint); font-size: 12px; line-height: 1.35; }
   .drawer-tools { align-items: stretch; padding: 9px; }
   .table-tabs { flex: 1; }
   .table-tabs button { flex: 1; }
@@ -380,6 +388,12 @@ button { color: inherit; }
   .esri-ui-top-left { top: 6px !important; left: 6px !important; }
   .esri-search { width: min(230px, calc(100vw - 118px)) !important; }
   .esri-scale-bar { display: none; }
+}
+
+@keyframes guidance-pulse { from { opacity: .45; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-panel-guidance svg { animation: none; }
 }
 
 @media (max-width: 430px) {
