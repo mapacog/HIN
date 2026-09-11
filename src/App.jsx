@@ -34,10 +34,37 @@ const LOCATIONS = {
   cities: ['Bellevue', 'Bennington', 'Carter Lake', 'Council Bluffs', 'Crescent', 'Gretna', 'La Vista', 'McClelland', 'Offutt AFB', 'Omaha', 'Papillion', 'Ralston', 'Springfield', 'Valley', 'Waterloo'],
 };
 
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+function isoDate(value) {
+  const date = value == null ? null : new Date(Number(value));
+  return date && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : '';
+}
+
+function epochDay(value) {
+  return Math.floor(Date.parse(`${value}T00:00:00Z`) / 86400000);
+}
+
+function dateFromEpochDay(value) {
+  return new Date(Number(value) * 86400000).toISOString().slice(0, 10);
+}
+
+function withoutCrashTime(filters) {
+  return { ...filters, crashStartDate: '', crashEndDate: '', months: [], transition: 'All times' };
+}
+
+function hasCrashTimeFilter(filters) {
+  return Boolean(filters.crashStartDate || filters.crashEndDate || filters.months?.length || filters.transition !== 'All times');
+}
+
 function initialSharedState() {
   const base = {
     filters: {
       ...DEFAULT_FILTERS,
+      months: [...DEFAULT_FILTERS.months],
       people: { ...DEFAULT_FILTERS.people },
       roads: { ...DEFAULT_FILTERS.roads },
     },
@@ -62,6 +89,11 @@ function initialSharedState() {
   const controls = params.getAll('control').filter((value) => CONTROL_OPTIONS.includes(value));
   const assignment = ['All', 'Segment', 'Junction'].includes(params.get('assignment')) ? params.get('assignment') : base.filters.assignment;
   const mode = ['All modes', 'Nonmotorist', 'Pedestrian', 'Bicycle'].includes(params.get('mode')) ? params.get('mode') : base.filters.mode;
+  const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') ? value : '';
+  const crashStartDate = validDate(params.get('crashFrom'));
+  const crashEndDate = validDate(params.get('crashThrough'));
+  const months = params.getAll('month').map(Number).filter((month) => month >= 1 && month <= 12);
+  const transition = ['All times', 'Sunrise', 'Sunset'].includes(params.get('transition')) ? params.get('transition') : base.filters.transition;
   const layers = new Set(params.getAll('layer'));
   const sharedStart = Number.isInteger(startYear) && startYear >= 1900 && startYear <= 2100 ? startYear : base.filters.startYear;
   const sharedEnd = Number.isInteger(endYear) && endYear >= 1900 && endYear <= 2100 ? endYear : base.filters.endYear;
@@ -74,6 +106,10 @@ function initialSharedState() {
       location: validLocations.has(location) ? location : '',
       assignment,
       mode,
+      crashStartDate,
+      crashEndDate,
+      months,
+      transition,
       people: {
         impaired: people.has('impaired'), unrestrained: people.has('unrestrained'),
         speeding: people.has('speeding'), distracted: people.has('distracted'), youngDriver: people.has('youngDriver'),
@@ -98,6 +134,10 @@ function buildShareUrl(filters, visible, includeParameters) {
   if (filters.location) params.set('location', filters.location);
   if (filters.assignment !== 'All') params.set('assignment', filters.assignment);
   if (filters.mode !== 'All modes') params.set('mode', filters.mode);
+  if (filters.crashStartDate) params.set('crashFrom', filters.crashStartDate);
+  if (filters.crashEndDate) params.set('crashThrough', filters.crashEndDate);
+  filters.months.forEach((month) => params.append('month', String(month)));
+  if (filters.transition !== 'All times') params.set('transition', filters.transition);
   if (filters.severities.length) filters.severities.forEach((value) => params.append('severity', value));
   else params.append('severity', 'none');
   Object.entries(filters.people).forEach(([key, enabled]) => { if (enabled) params.append('people', key); });
@@ -588,7 +628,7 @@ function crashPopupTemplate() {
         addPopupDetails(wrap, 'Crash circumstances', [
           ['Day / time', [a.day, a.time].filter(Boolean).join(' · ') || 'Not recorded'],
           ['Light', fieldText(a.light_cond)], ['Weather', fieldText(weather)], ['Surface', fieldText(a.surface_cond)],
-          ['Collision', fieldText(a.manner_of_collision)], ['First harmful event', fieldText(a.first_harmful_event)],
+          ['Manner of collision', fieldText(a.manner_of_collision)], ['First harmful event', fieldText(a.first_harmful_event)],
           ['Event location', fieldText(a.first_harm_location)],
         ]);
         const vulnerable = [];
@@ -1024,32 +1064,54 @@ function CheckToggle({ checked, onChange, label }) {
   return <button type="button" className={`check-toggle ${checked ? 'on' : ''}`} onClick={() => onChange(!checked)} aria-pressed={checked}><span>{label}</span><i><b /></i></button>;
 }
 
-function MultiSelect({ label, values, options, onChange, disabled, note }) {
+function MultiSelect({ label, values, options, onChange, disabled, note, emptyLabel = '0 selected' }) {
   const toggle = (value) => onChange(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]);
   return <details className={`multi-select ${disabled ? 'disabled' : ''}`}>
-    <summary><span>{label}</span><strong>{disabled ? 'Unavailable' : `${values.length} selected`}</strong><ChevronDown size={16} /></summary>
+    <summary><span>{label}</span><strong>{disabled ? 'Unavailable' : values.length ? `${values.length} selected` : emptyLabel}</strong><ChevronDown size={16} /></summary>
     {!disabled && <div>{options.map((option) => { const value = typeof option === 'object' ? option.value : option; const text = typeof option === 'object' ? option.label : option; return <label key={value}><input type="checkbox" checked={values.includes(value)} onChange={() => toggle(value)} />{text}</label>; })}</div>}
     {disabled && <p>{note}</p>}
   </details>;
 }
 
-function ExplorePanel({ filters, setFilters, visible, setVisible, selection, clearSelection, yearMax }) {
+function CrashTimeControls({ filters, setFilters, dateBounds }) {
+  const patch = (next) => setFilters((current) => ({ ...current, ...next }));
+  const minDay = epochDay(dateBounds.min);
+  const maxDay = epochDay(dateBounds.max);
+  const startDay = Math.max(minDay, Math.min(epochDay(filters.crashStartDate || dateBounds.min), maxDay));
+  const endDay = Math.max(startDay, Math.min(epochDay(filters.crashEndDate || dateBounds.max), maxDay));
+  const formatDate = (value) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00Z`));
+  return <div className="crash-time-controls">
+    <div className="time-heading"><div><span>Crash record time</span><strong>{formatDate(dateFromEpochDay(startDay))} – {formatDate(dateFromEpochDay(endDay))}</strong></div><button type="button" onClick={() => patch({ crashStartDate: '', crashEndDate: '', months: [], transition: 'All times' })} disabled={!hasCrashTimeFilter(filters)}>All dates</button></div>
+    <p>Refines crash points and crash-derived insights. It does not redefine the HIN, All Safety Network, or Network Table.</p>
+    <div className="date-range-slider">
+      <label><span>Start date</span><input type="range" min={minDay} max={maxDay} value={startDay} onChange={(event) => patch({ crashStartDate: dateFromEpochDay(Math.min(Number(event.target.value), endDay)) })} /></label>
+      <label><span>End date</span><input type="range" min={minDay} max={maxDay} value={endDay} onChange={(event) => patch({ crashEndDate: dateFromEpochDay(Math.max(Number(event.target.value), startDay)) })} /></label>
+    </div>
+    <MultiSelect label="Months" values={filters.months} options={MONTHS.map((label, index) => ({ value: index + 1, label }))} onChange={(months) => patch({ months })} emptyLabel="All months" />
+    <fieldset className="transition-control"><legend>Transition period</legend><div>{['All times', 'Sunrise', 'Sunset'].map((value) => <button type="button" key={value} className={filters.transition === value ? 'active' : ''} onClick={() => patch({ transition: value })}>{value}</button>)}</div></fieldset>
+    <small className="transition-note">Iowa uses crashes recorded as Dawn/Dusk. Nebraska records time but not a usable lighting category, so it uses Omaha seasonal local-clock windows that account for longitude, date-related solar variation, and daylight saving time. These controls also intersect the From–Through year range.</small>
+  </div>;
+}
+
+function ExplorePanel({ filters, setFilters, visible, setVisible, selection, clearSelection, yearMax, dateBounds, crashDataThrough }) {
   const patch = (next) => setFilters((current) => ({ ...current, ...next }));
   const toggleSeverity = (value) => patch({ severities: filters.severities.includes(value) ? filters.severities.filter((item) => item !== value) : [...filters.severities, value] });
   return <>
     <section className="panel-section"><h2>Map layers</h2>
       <Toggle checked={visible.hin} onChange={(checked) => setVisible((v) => checked ? { ...v, hin: true, safety: false } : { ...v, hin: false })} label="High Injury Network" description="HIN roads and intersections" icon={Route} color={BRAND.blue} />
       <Toggle checked={visible.safety} onChange={(checked) => setVisible((v) => checked ? { ...v, safety: true, hin: false } : { ...v, safety: false })} label="All Safety Network" description="Every road and intersection in the analysis network" icon={ShieldCheck} color={BRAND.teal} />
-      <Toggle checked={visible.crashes} onChange={(crashes) => setVisible((v) => ({ ...v, crashes }))} label="Crash records" description="Individual crash events symbolized by highest severity" icon={Car} color={BRAND.coral} />
+      <Toggle checked={visible.crashes} onChange={(crashes) => { setVisible((v) => ({ ...v, crashes })); if (!crashes) setFilters((current) => withoutCrashTime(current)); }} label="Crash records" description="Individual crash events symbolized by highest severity" icon={Car} color={BRAND.coral} />
     </section>
     <aside className="mobile-panel-guidance"><CircleAlert size={18} /><span>Your selections update immediately. Open <b>Map</b> to inspect locations or <b>Insights</b> to review the results.</span></aside>
-    <section className="panel-section"><h2>Location</h2><label className="field"><span>Select county or city</span><select value={filters.location} onChange={(event) => patch({ location: event.target.value })}><option value="">MAPA TMA</option><optgroup label="Counties">{LOCATIONS.counties.map((name) => <option key={name} value={`county|${name}`}>{name} County</option>)}</optgroup><optgroup label="Cities">{LOCATIONS.cities.map((name) => <option key={name} value={`city|${name}`}>{name}</option>)}</optgroup></select><ChevronDown size={17} /></label></section>
+    <section className="panel-section"><h2>Location</h2><label className="field"><span>Select county or city</span><select value={filters.location} onChange={(event) => patch({ location: event.target.value })}><option value="">MAPA TMA</option><optgroup label="Counties">{LOCATIONS.counties.map((name) => <option key={name} value={`county|${name}`}>{name} County</option>)}</optgroup><optgroup label="Cities">{LOCATIONS.cities.map((name) => <option key={name} value={`city|${name}`}>{name}</option>)}</optgroup></select><ChevronDown size={17} /></label><p className="location-boundary-note">Crash records are filtered spatially by the selected census boundary—not by the crash record city field. Older crashes may appear inside today’s city limits where annexation occurred after the crash.</p></section>
     <section className="panel-section assignment-section"><h2>Network assignment</h2><label className="field"><span>Show network and crashes assigned to</span><select value={filters.assignment} onChange={(event) => patch({ assignment: event.target.value })}><option>All</option><option>Segment</option><option>Junction</option></select><ChevronDown size={17} /></label></section>
     {selection && <section className="focus-card"><button onClick={clearSelection} aria-label="Clear selected network feature"><X size={18} /></button><span>Selected {selection.type}</span><h3>{selection.name}</h3><p>{[selection.city, selection.county].filter(Boolean).join(' · ')}</p><div><b>{formatNumber(selection.crashes)}</b><small>{filters.startYear}–{filters.endYear} crashes</small><b>{formatNumber(selection.kaCrashes)}</b><small>fatal + serious crashes</small></div></section>}
-    <section className="panel-section"><h2>Crash records</h2>
+    <section className="panel-section"><div className="crash-records-heading"><h2>Crash records</h2>{crashDataThrough && <small>Data through <b>{crashDataThrough}</b></small>}</div>
       <div className="mode-control">{[['All modes', Car], ['Nonmotorist', Accessibility], ['Pedestrian', Footprints], ['Bicycle', Bike]].map(([mode, Icon]) => <button type="button" key={mode} className={filters.mode === mode ? 'active' : ''} onClick={() => patch({ mode })}><Icon size={17} />{mode}</button>)}</div>
       <div className="period-row"><label><span>From</span><select value={filters.startYear} onChange={(e) => patch({ startYear: Math.min(Number(e.target.value), filters.endYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label><span>—</span><label><span>Through</span><select value={filters.endYear} onChange={(e) => patch({ endYear: Math.max(Number(e.target.value), filters.startYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label></div>
+      <a className="kabco-note" href="https://highways.dot.gov/media/20141" target="_blank" rel="noreferrer" aria-label="Open the FHWA KABCO injury classification definitions"><CircleAlert size={17} /><span><strong>MAPA combined KABCO:</strong> Iowa and Nebraska source labels vary by state and reporting period. MAPA harmonizes them as K fatal, A serious injury, B minor injury, C possible injury, and O property damage only. <em>FHWA definitions ↗</em></span></a>
       <div className="severity-list">{SEVERITIES.map((item) => <button type="button" key={item.value} className={filters.severities.includes(item.value) ? 'active' : ''} onClick={() => toggleSeverity(item.value)} style={{ '--severity': item.color }}><i />{item.label}<span>{item.short}</span></button>)}</div>
+      {visible.crashes && <CrashTimeControls filters={filters} setFilters={setFilters} dateBounds={dateBounds} />}
     </section>
   </>;
 }
@@ -1103,7 +1165,7 @@ function CrashAnalytics({ performance, period, networkLabel }) {
   </section>;
 }
 
-function PerformancePanel({ performance, loading, impacts, onFocusImpact, period, networkMode, assignment, selectionCount }) {
+function PerformancePanel({ performance, loading, impacts, onFocusImpact, period, networkMode, assignment, selectionCount, crashTimeActive }) {
   const [impactType, setImpactType] = useState('segment');
   const impactRows = impacts[impactType] || [];
   const safetyMode = networkMode === 'safety';
@@ -1127,12 +1189,12 @@ function PerformancePanel({ performance, loading, impacts, onFocusImpact, period
   const intRatio = concentrationRatio(intersectionFsi, performance.intersections.count, baseIntersectionFsi, performance.baseIntersections.count);
   return <>
     <section className="performance">
-      <div className="performance-title"><span>Network performance</span><h2>What are the statistics of the network?</h2><p>Statistics cover <b>{period}</b> for the <b>{networkLabel}</b> and update with the active location, assignment, network filters{selectionCount ? `, and ${selectionCount.toLocaleString()} selected network locations` : ''}.</p></div>
+      <div className="performance-title"><span>Network performance</span><h2>What are the statistics of the network?</h2><p>Statistics cover <b>{period}</b> for the <b>{networkLabel}</b> and update with the active census-boundary location, assignment, network filters{crashTimeActive ? ', crash-record time filters' : ''}{selectionCount ? `, and ${selectionCount.toLocaleString()} selected network locations` : ''}.</p></div>
       {loading ? <div className="loading-block">Updating network statistics…</div> : <>
         <div className="performance-total"><span>Crashes on the displayed {networkShort}</span><strong>{formatNumber(totalCrashes)}</strong><small>{formatNumber(areaCrashes)} matching crashes occurred across the entire selected area</small><div>{showRoads && <p><b>{percent(performance.roads.crashes, totalCrashes)}%</b>occurred on roadways</p>}{showIntersections && <p><b>{percent(performance.intersections.crashes, totalCrashes)}%</b>occurred at intersections</p>}</div></div>
         <div className="performance-total"><span>People killed or seriously injured</span><strong>{formatNumber(totalFatal + totalSerious)}</strong><small>People killed: <b>{formatNumber(totalFatal)}</b> · People seriously injured: <b>{formatNumber(totalSerious)}</b></small><div>{showRoads && <p><b>{percent(roadFsi, totalFatal + totalSerious)}%</b>on roadways</p>}{showIntersections && <p><b>{percent(intersectionFsi, totalFatal + totalSerious)}%</b>at intersections</p>}</div></div>
         <div className="network-profile"><h3>Network pulse</h3><div>{showRoads && <span><b>{formatNumber(performance.roads.miles, 1)}</b>{networkShort} roadway miles</span>}{showIntersections && <span><b>{formatNumber(performance.intersections.count)}</b>{networkShort} intersections</span>}<span><b>{formatNumber((performance.roads.nonmotorists || 0) + (performance.intersections.nonmotorists || 0))}</b>nonmotorists recorded</span><span><b>{formatNumber((performance.roads.vehicles || 0) + (performance.intersections.vehicles || 0))}</b>vehicles involved</span></div></div>
-        {safetyMode ? <div className="comparison whole-network"><h3>Entire safety network view</h3><p>The All Safety Network is the full comparison baseline for the selected location and assignment. Turn this layer off to return the performance panel to the period-filtered HIN comparison.</p></div> : <div className="comparison"><h3>How does it compare to the entire network?</h3><div className="comparison-method"><strong>KSI concentration</strong><span>Relative to the full selected safety-network average</span></div><p>Uses the same location, crash period, severity, travel mode, and Safer People filters.</p>
+        {safetyMode ? <div className="comparison whole-network"><h3>Entire safety network view</h3><p>The All Safety Network is the full comparison baseline for the selected location and assignment. Turn this layer off to return the performance panel to the period-filtered HIN comparison.</p></div> : <div className="comparison"><h3>How does it compare to the entire network?</h3><div className="comparison-method"><strong>KSI concentration</strong><span>Relative to the full selected safety-network average</span></div><p>Uses the same census-boundary location, crash period and timing, severity, travel mode, and Safer People filters.</p>
           <div className="comparison-grid">{showRoads && <article><h4>Roadways</h4><p>{roadRatio == null ? <>A concentration multiplier is not shown when fewer than five fatal or serious injuries are selected.</> : <>Fatal-and-serious-injury concentration is <strong>{formatNumber(roadRatio, 1)}×</strong> the roadway-network average.</>}</p><div className="coverage"><span><b>{roadCoverage}%</b>of all roadway miles</span><i /><span><b>{roadCapture}%</b>of roadway fatalities and serious injuries</span></div></article>}
           {showIntersections && <article><h4>Intersections</h4><p>{intRatio == null ? <>A concentration multiplier is not shown when fewer than five fatal or serious injuries are selected.</> : <>Fatal-and-serious-injury concentration is <strong>{formatNumber(intRatio, 1)}×</strong> the intersection-network average.</>}</p><div className="coverage"><span><b>{intCoverage}%</b>of all intersections</span><i /><span><b>{intCapture}%</b>of intersection fatalities and serious injuries</span></div></article>}</div>
         </div>}
@@ -1227,6 +1289,8 @@ export default function App() {
   const [filters, setFilters] = useState(sharedState.filters);
   const [visible, setVisible] = useState(sharedState.visible);
   const [yearMax, setYearMax] = useState(YEAR_MAX);
+  const [dateBounds, setDateBounds] = useState({ min: `${YEAR_MIN}-01-01`, max: `${YEAR_MAX}-12-31` });
+  const [latestCrashDate, setLatestCrashDate] = useState('');
   const [leftTab, setLeftTab] = useState('explore');
   const [mobilePanel, setMobilePanel] = useState('map');
   const [mapApi, setMapApi] = useState(null);
@@ -1251,10 +1315,17 @@ export default function App() {
 
   useEffect(() => {
     if (!mapApi) return;
-    mapApi.layers.crashes.queryFeatures({ outStatistics: [statistic('max', 'Year', 'maxYear')], returnGeometry: false, where: '1=1' })
+    mapApi.layers.crashes.queryFeatures({ outStatistics: [statistic('max', 'Year', 'maxYear'), statistic('min', 'date', 'minDate'), statistic('max', 'date', 'maxDate')], returnGeometry: false, where: '1=1' })
       .then((result) => {
-        const max = Number(attributesOf(result).maxYear || YEAR_MAX);
+        const attributes = attributesOf(result);
+        const max = Number(attributes.maxYear || YEAR_MAX);
         setYearMax(max);
+        const minDate = isoDate(attributes.minDate);
+        const maxDate = isoDate(attributes.maxDate);
+        if (minDate && maxDate) {
+          setDateBounds({ min: minDate, max: maxDate });
+          setLatestCrashDate(maxDate);
+        }
         setFilters((current) => current.endYear === YEAR_MAX ? { ...current, endYear: max } : current);
       }).catch(() => {});
   }, [mapApi]);
@@ -1291,6 +1362,7 @@ export default function App() {
     setNetworkRows({ segment: [], intersection: [] });
     const timer = setTimeout(async () => {
       try {
+        const networkFilters = withoutCrashTime(filters);
         const segmentWhere = filters.assignment === 'Junction' ? '1=0' : buildNetworkWhere(filters, 'segment');
         const intersectionWhere = filters.assignment === 'Segment' ? '1=0' : buildNetworkWhere(filters, 'intersection');
         const safetySegmentWhere = filters.assignment === 'Junction' ? '1=0' : buildNetworkWhere(filters, 'segment', { hinOnly: false });
@@ -1298,7 +1370,7 @@ export default function App() {
         const baseFilters = { ...DEFAULT_FILTERS, location: filters.location };
         const baseSegmentWhere = filters.assignment === 'Junction' ? '1=0' : buildNetworkWhere(baseFilters, 'segment', { hinOnly: false });
         const baseIntersectionWhere = filters.assignment === 'Segment' ? '1=0' : buildNetworkWhere(baseFilters, 'intersection', { hinOnly: false });
-        const relationshipFilters = { ...filters, startYear: YEAR_MIN, endYear: yearMax };
+        const relationshipFilters = { ...networkFilters, startYear: YEAR_MIN, endYear: yearMax };
         const qualificationFilters = {
           ...DEFAULT_FILTERS,
           location: filters.location,
@@ -1338,8 +1410,8 @@ export default function App() {
         const periodSegments = periodNetworkRows(segments, segmentYears, filters.startYear, filters.endYear, segmentQualificationYears);
         const periodIntersections = periodNetworkRows(intersections, intersectionYears, filters.startYear, filters.endYear, intersectionQualificationYears);
         const [activeSegments, activeIntersections] = safetyMode ? await Promise.all([
-          queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.querySegments, filters, 'segment'),
-          queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.queryIntersections, filters, 'intersection'),
+          queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.querySegments, networkFilters, 'segment'),
+          queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.queryIntersections, networkFilters, 'intersection'),
         ]) : [periodSegments, periodIntersections];
         if (cancelled) return;
         const selectedSegments = spatialSelection ? activeSegments.filter((row) => spatialSelection.segment.includes(Number(row.objectId))) : activeSegments;
@@ -1352,15 +1424,31 @@ export default function App() {
         });
         const selectedHinSegments = spatialSelection ? periodSegments.filter((row) => spatialSelection.segment.includes(Number(row.objectId))) : periodSegments;
         const selectedHinIntersections = spatialSelection ? periodIntersections.filter((row) => spatialSelection.intersection.includes(Number(row.objectId))) : periodIntersections;
-        const linkedRoad = periodTotal(segmentYears, selectedHinSegments.map((row) => row.id), filters.startYear, filters.endYear);
-        const linkedIntersection = periodTotal(intersectionYears, selectedHinIntersections.map((row) => row.id), filters.startYear, filters.endYear);
+        const exactCrashTime = hasCrashTimeFilter(filters);
+        const [displayedSegmentYears, displayedIntersectionYears] = !safetyMode && exactCrashTime ? await Promise.all([
+          queryLinkedByYear(mapApi.layers.queryCrashes, selectedHinSegments.map((row) => row.id), 'assigned_segment_id', currentCrashWhere),
+          queryLinkedByYear(mapApi.layers.queryCrashes, selectedHinIntersections.map((row) => row.id), 'assigned_junction_id', currentCrashWhere),
+        ]) : [segmentYears, intersectionYears];
+        const [selectedSafetySegmentYears, selectedSafetyIntersectionYears] = safetyMode && spatialSelection && exactCrashTime ? await Promise.all([
+          queryLinkedByYear(mapApi.layers.queryCrashes, selectedSegments.map((row) => row.id), 'assigned_segment_id', currentCrashWhere),
+          queryLinkedByYear(mapApi.layers.queryCrashes, selectedIntersections.map((row) => row.id), 'assigned_junction_id', currentCrashWhere),
+        ]) : [null, null];
+        if (cancelled) return;
+        const linkedRoad = periodTotal(displayedSegmentYears, selectedHinSegments.map((row) => row.id), filters.startYear, filters.endYear);
+        const linkedIntersection = periodTotal(displayedIntersectionYears, selectedHinIntersections.map((row) => row.id), filters.startYear, filters.endYear);
         const hinRoad = { ...aggregateNetworkRows(selectedHinSegments), ...linkedRoad };
         const hinIntersection = { ...aggregateNetworkRows(selectedHinIntersections), ...linkedIntersection };
+        const selectedSafetyRoad = safetyMode && spatialSelection && exactCrashTime
+          ? { ...aggregateNetworkRows(selectedSegments), ...periodTotal(selectedSafetySegmentYears, selectedSegments.map((row) => row.id), filters.startYear, filters.endYear) }
+          : aggregateNetworkRows(selectedSegments);
+        const selectedSafetyIntersection = safetyMode && spatialSelection && exactCrashTime
+          ? { ...aggregateNetworkRows(selectedIntersections), ...periodTotal(selectedSafetyIntersectionYears, selectedIntersections.map((row) => row.id), filters.startYear, filters.endYear) }
+          : aggregateNetworkRows(selectedIntersections);
         const roadCrash = safetyMode
-          ? spatialSelection ? aggregateNetworkRows(selectedSegments) : { ...safetyRoadUnits, ...periodTotal(safetyRoadYears, ['Segment'], filters.startYear, filters.endYear) }
+          ? spatialSelection ? selectedSafetyRoad : { ...safetyRoadUnits, ...periodTotal(safetyRoadYears, ['Segment'], filters.startYear, filters.endYear) }
           : hinRoad;
         const intCrash = safetyMode
-          ? spatialSelection ? aggregateNetworkRows(selectedIntersections) : { ...safetyIntersectionUnits, ...periodTotal(safetyIntersectionYears, ['Junction'], filters.startYear, filters.endYear) }
+          ? spatialSelection ? selectedSafetyIntersection : { ...safetyIntersectionUnits, ...periodTotal(safetyIntersectionYears, ['Junction'], filters.startYear, filters.endYear) }
           : hinIntersection;
         setNetworkRows({
           segment: selectedSegments.map((row) => ({ ...row, networkMode: safetyMode ? 'safety' : 'hin' })),
@@ -1413,13 +1501,14 @@ export default function App() {
     ? spatialSelection.segment.length + spatialSelection.intersection.length
     : selection ? 1 : 0;
   const hasNotice = mapStatus !== 'ready' || Boolean(analyticsError);
-  const statusMessage = mapStatus === 'loading' ? 'The web map and ArcGIS layers are still loading.' : analyticsError || (mapStatus === 'ready' ? 'The map and network analytics are connected to the near-live NDOT and Iowa DOT database.' : String(mapStatus));
+  const crashDataThrough = latestCrashDate ? new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${latestCrashDate}T00:00:00Z`)) : '';
+  const statusMessage = mapStatus === 'loading' ? 'The web map and ArcGIS layers are still loading.' : analyticsError || (mapStatus === 'ready' ? `The map and network analytics are connected to the near-live NDOT and Iowa DOT database.${crashDataThrough ? ` The newest crash record currently available is dated ${crashDataThrough}.` : ''}` : String(mapStatus));
   return <main className={`app mobile-${mobilePanel}`}>
     <header className="topbar"><a className="brand-link" href="https://www.mapacog.org" target="_blank" rel="noreferrer" aria-label="Visit the MAPA website"><img src="./mapa-logo.png" alt="Metropolitan Area Planning Agency" /></a><div className="product-name"><span>Safety planning</span><h1>High Injury Network</h1></div><div className="top-actions"><div className="status-wrap" onMouseEnter={() => setStatusHovered(true)} onMouseLeave={() => setStatusHovered(false)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setStatusPinned(false); }}><button className={`status-button ${hasNotice ? 'notice' : ''}`} onClick={() => setStatusPinned((current) => !current)} onFocus={() => setStatusPinned(true)} onKeyDown={(event) => { if (event.key === 'Escape') { setStatusPinned(false); setStatusHovered(false); event.currentTarget.blur(); } }} aria-expanded={showStatus} aria-controls="data-status-popover"><CircleAlert size={16} />{mapStatus === 'loading' ? 'Loading data' : hasNotice ? 'Data notice' : 'Data is current'}</button>{showStatus && <div id="data-status-popover" className="status-popover"><strong>{hasNotice ? 'Data notice' : 'Data is current'}</strong><p>{statusMessage}</p><small>This control reports connection or query issues; it does not change the map.</small></div>}</div><ShareDialog filters={filters} visible={visible} /><button onClick={reset}><RefreshCcw size={17} />Reset filters</button><button className="mobile-menu" onClick={() => setMobilePanel(mobilePanel === 'filters' ? 'map' : 'filters')}><Menu size={22} /></button></div></header>
     <div className={`workspace ${leftCollapsed ? 'left-collapsed' : ''}`}>
-      <aside className="left-panel"><nav><button className={leftTab === 'explore' ? 'active' : ''} onClick={() => setLeftTab('explore')}><Layers3 size={18} />Explore</button><button className={leftTab === 'filters' ? 'active' : ''} onClick={() => setLeftTab('filters')}><Filter size={18} />Filters</button></nav><div className="panel-scroll">{leftTab === 'explore' ? <ExplorePanel filters={filters} setFilters={setFilters} visible={visible} setVisible={setVisible} selection={selection} clearSelection={clearSelection} yearMax={yearMax} /> : <FiltersPanel filters={filters} setFilters={setFilters} />}</div></aside>
+      <aside className="left-panel"><nav><button className={leftTab === 'explore' ? 'active' : ''} onClick={() => setLeftTab('explore')}><Layers3 size={18} />Explore</button><button className={leftTab === 'filters' ? 'active' : ''} onClick={() => setLeftTab('filters')}><Filter size={18} />Filters</button></nav><div className="panel-scroll">{leftTab === 'explore' ? <ExplorePanel filters={filters} setFilters={setFilters} visible={visible} setVisible={setVisible} selection={selection} clearSelection={clearSelection} yearMax={yearMax} dateBounds={dateBounds} crashDataThrough={crashDataThrough} /> : <FiltersPanel filters={filters} setFilters={setFilters} />}</div></aside>
       <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { if (!record) { setSelection(null); return; } const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><SelectionSummary count={selectedFeatureCount} onZoom={() => mapApi?.zoomSelection()} /><div className="map-key">{visible.hin && <><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span></>}{visible.safety && <span><i className="safety" />Safety network</span>}{visible.crashes && <span><i className="crash" />Crash severity</span>}</div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={visible.safety ? 'All Safety Network' : 'High Injury Network'} /></section>
-      <aside className="insights-panel"><div className="insights-scroll"><PerformancePanel performance={performance} loading={analyticsLoading} impacts={impacts} onFocusImpact={focusImpact} period={`${filters.startYear}–${filters.endYear}`} networkMode={visible.safety ? 'safety' : 'hin'} assignment={filters.assignment} selectionCount={spatialSelection ? spatialSelection.segment.length + spatialSelection.intersection.length : 0} /></div></aside>
+      <aside className="insights-panel"><div className="insights-scroll"><PerformancePanel performance={performance} loading={analyticsLoading} impacts={impacts} onFocusImpact={focusImpact} period={`${filters.startYear}–${filters.endYear}`} networkMode={visible.safety ? 'safety' : 'hin'} assignment={filters.assignment} selectionCount={spatialSelection ? spatialSelection.segment.length + spatialSelection.intersection.length : 0} crashTimeActive={hasCrashTimeFilter(filters)} /></div></aside>
     </div>
     <nav className="mobile-nav"><button className={mobilePanel === 'map' ? 'active' : ''} onClick={() => setMobilePanel('map')}><MapIcon size={21} />Map</button><button className={mobilePanel === 'filters' ? 'active' : ''} onClick={() => setMobilePanel('filters')}><SlidersHorizontal size={21} />Explore</button><button className={mobilePanel === 'insights' ? 'active' : ''} onClick={() => setMobilePanel('insights')}><BarChart3 size={21} />Insights</button><button className={drawerOpen ? 'active' : ''} onClick={() => { setDrawerOpen(true); setMobilePanel('map'); }}><Table2 size={21} />Data</button></nav>
   </main>;

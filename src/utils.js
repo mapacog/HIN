@@ -33,6 +33,39 @@ function modeClause(mode) {
   return null;
 }
 
+function validIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function nextIsoDate(value) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+const NE_TRANSITION_WINDOWS = {
+  Sunrise: [
+    [1, '07:30', '07:53'], [2, '07:30', '07:53'],
+    [3, '06:15', '07:30'], [4, '06:15', '07:30'], [5, '06:15', '07:30'],
+    [6, '05:48', '06:15'], [7, '05:48', '06:15'], [8, '05:48', '06:15'],
+    [9, '06:15', '07:53'], [10, '06:15', '07:53'], [11, '06:15', '07:53'],
+    [12, '07:30', '07:53'],
+  ],
+  Sunset: [
+    [1, '16:56', '18:15'], [2, '16:56', '18:15'],
+    [3, '18:20', '20:50'], [4, '18:20', '20:50'], [5, '18:20', '20:50'],
+    [6, '20:50', '21:02'], [7, '20:50', '21:02'], [8, '20:50', '21:02'],
+    [9, '16:56', '20:30'], [10, '16:56', '20:30'], [11, '16:56', '20:30'],
+    [12, '16:56', '18:15'],
+  ],
+};
+
+function transitionClause(period) {
+  const neWindows = NE_TRANSITION_WINDOWS[period].map(([month, start, end]) => `(EXTRACT(MONTH FROM date) = ${month} AND time >= '${start}' AND time <= '${end}')`).join(' OR ');
+  const iaHalfDay = period === 'Sunrise' ? "time >= '00:00' AND time < '12:00'" : "time >= '12:00' AND time <= '23:59:59'";
+  return `((state = 'IA' AND light_cond = 'Dawn/Dusk' AND ${iaHalfDay}) OR (state = 'NE' AND (${neWindows})))`;
+}
+
 export function buildCrashWhere(filters, selection = null) {
   const clauses = [`Year >= ${Number(filters.startYear)}`, `Year <= ${Number(filters.endYear)}`];
   if (!filters.severities?.length) clauses.push('1 = 0');
@@ -40,6 +73,11 @@ export function buildCrashWhere(filters, selection = null) {
   const location = parseLocation(filters.location);
   if (location?.type === 'county') clauses.push(sqlEquals('county', location.name));
   if (location?.type === 'city') clauses.push(sqlEquals('city_name', location.name));
+  if (validIsoDate(filters.crashStartDate)) clauses.push(`date >= DATE '${filters.crashStartDate}'`);
+  if (validIsoDate(filters.crashEndDate)) clauses.push(`date < DATE '${nextIsoDate(filters.crashEndDate)}'`);
+  const months = filters.months?.map(Number).filter((month) => month >= 1 && month <= 12) || [];
+  if (months.length) clauses.push(`EXTRACT(MONTH FROM date) IN (${months.join(',')})`);
+  if (filters.transition === 'Sunrise' || filters.transition === 'Sunset') clauses.push(transitionClause(filters.transition));
   if (filters.assignment && filters.assignment !== 'All') clauses.push(sqlEquals('network_assignment', filters.assignment));
   const travelMode = modeClause(filters.mode);
   if (travelMode) clauses.push(travelMode);

@@ -55,6 +55,10 @@ export const DEFAULT_FILTERS = {
   location: '',
   assignment: 'All',
   mode: 'All modes',
+  crashStartDate: '',
+  crashEndDate: '',
+  months: [],
+  transition: 'All times',
   people: { impaired: false, unrestrained: false, speeding: false, distracted: false, youngDriver: false },
   roads: { speeds: [], classes: [], intersectionTypes: [], controls: [] },
 };
