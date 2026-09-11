@@ -38,26 +38,6 @@ The app reads MAPA's public ArcGIS Online services at runtime through the web ma
 
 The interface reports the source as a near-live NDOT and Iowa DOT database connection. Routine service updates do not require rebuilding the app as long as layer titles and schemas remain compatible.
 
-## Run locally
-
-Requires Node.js 22 or newer.
-
-```bash
-npm install
-npm run dev
-```
-
-Open the localhost URL printed by Vite (normally `http://127.0.0.1:5173`).
-
-## Verify
-
-```bash
-npm test
-npm run build
-npm run preview
-```
-
-The production output is written to `dist/`.
 
 ## Analysis periods
 
