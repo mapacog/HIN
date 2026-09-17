@@ -93,10 +93,11 @@ button { color: inherit; }
 .crash-records-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
 .crash-records-heading small { color: var(--muted); font-size: 10.5px; line-height: 1.25; text-align: right; }
 .crash-records-heading small b { color: var(--blue); white-space: nowrap; }
-.mode-control { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 20px; border: 1px solid #bfc9c7; background: white; }
+.mode-control { display: grid; grid-template-columns: repeat(5, 1fr); margin-bottom: 20px; border: 1px solid #bfc9c7; background: white; }
 .mode-control button { min-height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 0; border-right: 1px solid #d9dfdd; background: white; font-size: 12px; cursor: pointer; }
 .mode-control button:last-child { border-right: 0; }
 .mode-control button.active { color: white; background: var(--teal); }
+.circumstances-section .multi-select { margin-top: 14px; }
 .period-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 10px; margin-bottom: 19px; }
 .period-row > span { padding-bottom: 13px; color: var(--grey); }
 .kabco-note { display: flex; align-items: flex-start; gap: 8px; margin: -3px 0 13px; padding: 10px 11px; color: #425250; background: #eef7f5; border-left: 3px solid var(--blue); font-size: 11.5px; line-height: 1.4; text-decoration: none; transition: background .15s, border-color .15s; }
@@ -253,6 +254,13 @@ button { color: inherit; }
 .network-profile > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .network-profile span { padding: 10px 7px; color: var(--muted); background: #f1f6f5; text-align: center; font-size: 10px; line-height: 1.25; }
 .network-profile span b { display: block; margin-bottom: 3px; color: var(--blue); font: 500 20px Oswald, sans-serif; }
+.truck-context { padding: 20px 21px; border-bottom: 1px solid var(--mint); background: #fbfcfc; }
+.truck-context-heading h3 { margin: 0 0 5px; color: var(--dark); font: 500 18px Oswald, sans-serif; text-align: center; text-transform: uppercase; }
+.truck-context-heading p { margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }
+.truck-context-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.truck-context-grid > span { min-width: 0; padding: 11px 7px; color: var(--muted); background: #eef5f3; border-top: 3px solid var(--mint); text-align: center; font-size: 10px; line-height: 1.25; }
+.truck-context-grid b { display: block; margin-bottom: 3px; color: var(--blue); font: 500 21px Oswald, sans-serif; }
+.truck-context-grid small { display: block; margin-top: 3px; color: #707876; font-size: 9px; }
 .comparison { padding: 22px 21px 25px; }
 .comparison > h3 { margin: 0 0 5px; text-align: center; font: 600 20px Oswald, sans-serif; text-transform: uppercase; }
 .comparison > p { margin: 9px 0 18px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.4; }

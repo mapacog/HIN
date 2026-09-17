@@ -2,6 +2,13 @@ export function escapeSqlLiteral(value) {
   return String(value).replaceAll("'", "''");
 }
 
+export function analysisModeForLayers(visible = {}) {
+  if (visible.safety) return 'safety';
+  if (visible.hin) return 'hin';
+  if (visible.crashes) return 'crashes';
+  return 'hin';
+}
+
 export function sqlEquals(field, value) {
   return `${field} = '${escapeSqlLiteral(value)}'`;
 }
@@ -30,7 +37,47 @@ function modeClause(mode) {
   if (mode === 'Nonmotorist') return 'nonmotorist_counted <> 0';
   if (mode === 'Bicycle') return '(nonmotorist_counted <> 0 AND num_bike <> 0)';
   if (mode === 'Pedestrian') return '(nonmotorist_counted <> 0 AND (num_bike IS NULL OR num_bike = 0))';
+  if (mode === 'Truck') return '(num_sut > 0 OR num_tt > 0)';
   return null;
+}
+
+function jsonKeyClause(field, key) {
+  return `${field} LIKE '%"${escapeSqlLiteral(key)}"%'`;
+}
+
+function contributingCircumstanceClauses(values = [], target = 'network') {
+  const crash = target === 'crash';
+  const environmentField = crash ? 'CBC_envs' : 'CBC_envs_counts';
+  return values.map((value) => {
+    switch (value) {
+      case 'wetSurface':
+        return crash ? "surface_cond = 'Wet'" : 'surface_wet > 0';
+      case 'winterSurface':
+        return crash ? "surface_cond IN ('Snow', 'Ice', 'Slush')" : '(surface_snow > 0 OR surface_ice > 0 OR surface_slush > 0)';
+      case 'standingWater':
+        return crash ? "surface_cond = 'Water'" : 'surface_water > 0';
+      case 'precipitation':
+        return crash
+          ? "(weather_cond_1 IN ('Rain', 'Snow', 'Sleet/hail/freezing rain/drizzle') OR weather_cond_2 IN ('Rain', 'Snow', 'Sleet/hail/freezing rain/drizzle'))"
+          : '(weather_rain > 0 OR weather_snow > 0 OR weather_sleet > 0)';
+      case 'reducedVisibility':
+        return crash
+          ? "(weather_cond_1 IN ('Fog/smog/smoke', 'Blowing sand/soil/dirt/snow') OR weather_cond_2 IN ('Fog/smog/smoke', 'Blowing sand/soil/dirt/snow'))"
+          : '(weather_fog > 0 OR weather_blowing > 0)';
+      case 'severeWinds':
+        return crash ? "(weather_cond_1 = 'Severe winds' OR weather_cond_2 = 'Severe winds')" : 'weather_wind > 0';
+      case 'glare': return jsonKeyClause(environmentField, 'Glare');
+      case 'visualObstruction': return jsonKeyClause(environmentField, 'Visual obstruction');
+      case 'animalRoadway': return jsonKeyClause(environmentField, 'Animal in roadway');
+      case 'workZone': return jsonKeyClause(environmentField, 'Work zone');
+      case 'debris': return jsonKeyClause(environmentField, 'Debris');
+      case 'roughRoad': return jsonKeyClause(environmentField, 'Ruts/holes/bumps');
+      case 'shoulderCondition': return jsonKeyClause(environmentField, 'Shoulders (none/low/soft/high)');
+      case 'slipperySurface': return jsonKeyClause(environmentField, 'Slippery/loose/worn surface');
+      case 'jackknife': return crash ? "first_harmful_event = 'Jackknife'" : jsonKeyClause('first_harm_event_counts', 'Jackknife');
+      default: return null;
+    }
+  }).filter(Boolean);
 }
 
 function validIsoDate(value) {
@@ -82,6 +129,7 @@ export function buildCrashWhere(filters, selection = null) {
   const travelMode = modeClause(filters.mode);
   if (travelMode) clauses.push(travelMode);
   clauses.push(...peopleClauses(filters.people, 'crash'));
+  clauses.push(...contributingCircumstanceClauses(filters.circumstances, 'crash'));
   if (selection?.type === 'segment' && selection.id) clauses.push(sqlEquals('assigned_segment_id', selection.id));
   if (selection?.type === 'intersection' && selection.id) clauses.push(sqlEquals('assigned_junction_id', selection.id));
   if (selection?.type === 'corridor' && selection.ids?.length) clauses.push(`assigned_segment_id IN (${sqlList(selection.ids)})`);
@@ -96,6 +144,7 @@ export function buildNetworkWhere(filters, kind, { hinOnly = true, includeRoadFi
   const travelMode = modeClause(filters.mode);
   if (travelMode) clauses.push(travelMode);
   clauses.push(...peopleClauses(filters.people, 'network'));
+  clauses.push(...contributingCircumstanceClauses(filters.circumstances, 'network'));
   if (includeRoadFilters) {
     const roads = filters.roads || {};
     if (roads.speeds?.length) {

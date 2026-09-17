@@ -16,15 +16,15 @@ import QRCode from 'qrcode';
 import {
   Accessibility, BarChart3, Bike, Car, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Code2, Copy, Download, Filter, Footprints,
   Layers3, LocateFixed, Mail, Map as MapIcon, Menu, QrCode, RefreshCcw, Route, Search as SearchIcon,
-  Share2, ShieldCheck, SlidersHorizontal, Table2, X,
+  Share2, ShieldCheck, SlidersHorizontal, Table2, Truck, X,
 } from 'lucide-react';
 import {
-  BRAND, CONTROL_OPTIONS, DEFAULT_FILTERS, FUNCTIONAL_CLASSES, INTERSECTION_TYPES,
+  BRAND, CONTRIBUTING_CIRCUMSTANCES, CONTROL_OPTIONS, DEFAULT_FILTERS, FUNCTIONAL_CLASSES, INTERSECTION_TYPES,
   LAYER_TITLES, MAP_EXTENT, SEVERITIES, SERVICE_URLS, SPEED_OPTIONS,
   WEBMAP_ID, YEAR_MAX, YEAR_MIN,
 } from './config.js';
 import {
-  buildCrashWhere, buildNetworkWhere, chunk, classifyTrend, concentrationRatio, escapeSqlLiteral,
+  analysisModeForLayers, buildCrashWhere, buildNetworkWhere, chunk, classifyTrend, concentrationRatio, escapeSqlLiteral,
   formatNumber, normalizeNetworkFeature, parseLocation, percent,
 } from './utils.js';
 import { exportNetwork } from './exports.js';
@@ -65,6 +65,7 @@ function initialSharedState() {
     filters: {
       ...DEFAULT_FILTERS,
       months: [...DEFAULT_FILTERS.months],
+      circumstances: [...DEFAULT_FILTERS.circumstances],
       people: { ...DEFAULT_FILTERS.people },
       roads: { ...DEFAULT_FILTERS.roads },
     },
@@ -88,12 +89,13 @@ function initialSharedState() {
   const intersectionTypes = params.getAll('intersectionType').filter((value) => INTERSECTION_TYPES.includes(value));
   const controls = params.getAll('control').filter((value) => CONTROL_OPTIONS.includes(value));
   const assignment = ['All', 'Segment', 'Junction'].includes(params.get('assignment')) ? params.get('assignment') : base.filters.assignment;
-  const mode = ['All modes', 'Nonmotorist', 'Pedestrian', 'Bicycle'].includes(params.get('mode')) ? params.get('mode') : base.filters.mode;
+  const mode = ['All modes', 'Nonmotorist', 'Pedestrian', 'Bicycle', 'Truck'].includes(params.get('mode')) ? params.get('mode') : base.filters.mode;
   const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') ? value : '';
   const crashStartDate = validDate(params.get('crashFrom'));
   const crashEndDate = validDate(params.get('crashThrough'));
   const months = params.getAll('month').map(Number).filter((month) => month >= 1 && month <= 12);
   const transition = ['All times', 'Sunrise', 'Sunset'].includes(params.get('transition')) ? params.get('transition') : base.filters.transition;
+  const circumstances = params.getAll('circumstance').filter((value) => CONTRIBUTING_CIRCUMSTANCES.some((item) => item.value === value));
   const layers = new Set(params.getAll('layer'));
   const sharedStart = Number.isInteger(startYear) && startYear >= 1900 && startYear <= 2100 ? startYear : base.filters.startYear;
   const sharedEnd = Number.isInteger(endYear) && endYear >= 1900 && endYear <= 2100 ? endYear : base.filters.endYear;
@@ -110,6 +112,7 @@ function initialSharedState() {
       crashEndDate,
       months,
       transition,
+      circumstances,
       people: {
         impaired: people.has('impaired'), unrestrained: people.has('unrestrained'),
         speeding: people.has('speeding'), distracted: people.has('distracted'), youngDriver: people.has('youngDriver'),
@@ -141,6 +144,7 @@ function buildShareUrl(filters, visible, includeParameters) {
   if (filters.severities.length) filters.severities.forEach((value) => params.append('severity', value));
   else params.append('severity', 'none');
   Object.entries(filters.people).forEach(([key, enabled]) => { if (enabled) params.append('people', key); });
+  filters.circumstances.forEach((value) => params.append('circumstance', value));
   filters.roads.speeds.forEach((value) => params.append('speed', value));
   filters.roads.classes.forEach((value) => params.append('class', String(value)));
   filters.roads.intersectionTypes.forEach((value) => params.append('intersectionType', value));
@@ -186,6 +190,7 @@ const CRASH_POPUP_FIELDS = [
   'OBJECTID', 'crash_id', 'severity', 'date', 'day', 'time', 'city_name', 'county',
   'num_K_count', 'num_A_count', 'num_B_count', 'num_C_count', 'num_veh', 'num_veh_count',
   'num_occ', 'num_occ_count', 'num_K_occ', 'num_A_occ', 'num_K_nonm', 'num_A_nonm',
+  'num_sut', 'sut_KA', 'sut_occ', 'num_tt', 'tt_KA', 'tt_occ',
   'nonmotorist_counted', 'num_bike', 'light_cond', 'weather_cond_1', 'weather_cond_2',
   'surface_cond', 'manner_of_collision', 'first_harmful_event', 'first_harm_location',
   'alcohol_related', 'driver_under_25', 'driver_13_19', 'driver_65', 'driver_75',
@@ -211,6 +216,12 @@ function findLayer(webmap, title) {
 function statistic(statisticType, onStatisticField, outStatisticFieldName) {
   return { statisticType, onStatisticField, outStatisticFieldName };
 }
+
+const TRUCK_STATISTICS = [
+  statistic('sum', 'num_sut', 'singleUnitTrucks'), statistic('sum', 'num_tt', 'tractorTrailers'),
+  statistic('sum', 'sut_occ', 'singleUnitTruckOccupants'), statistic('sum', 'tt_occ', 'tractorTrailerOccupants'),
+  statistic('sum', 'sut_KA', 'singleUnitTruckKa'), statistic('sum', 'tt_KA', 'tractorTrailerKa'),
+];
 
 function attributesOf(result) {
   return result?.features?.[0]?.attributes || {};
@@ -248,7 +259,10 @@ function aggregateNetworkRows(rows) {
     bicycles: totals.bicycles + row.bicycles,
     vehicles: totals.vehicles + row.vehicles,
     occupants: totals.occupants + row.occupants,
-  }), { crashes: 0, fatal: 0, serious: 0, miles: 0, count: 0, nonmotorists: 0, bicycles: 0, vehicles: 0, occupants: 0 });
+    largeTrucks: totals.largeTrucks + Number(row.largeTrucks || 0),
+    truckOccupants: totals.truckOccupants + Number(row.truckOccupants || 0),
+    truckKaOccupants: totals.truckKaOccupants + Number(row.truckKaOccupants || 0),
+  }), { crashes: 0, fatal: 0, serious: 0, miles: 0, count: 0, nonmotorists: 0, bicycles: 0, vehicles: 0, occupants: 0, largeTrucks: 0, truckOccupants: 0, truckKaOccupants: 0 });
 }
 
 async function queryCrashBase(layer, where, assignment) {
@@ -281,6 +295,7 @@ async function queryLinkedByYear(layer, ids, idField, where) {
         statistic('count', 'OBJECTID', 'crashes'),
         statistic('sum', 'num_K_occ', 'fatalOcc'), statistic('sum', 'num_K_nonm', 'fatalNonm'),
         statistic('sum', 'num_A_occ', 'seriousOcc'), statistic('sum', 'num_A_nonm', 'seriousNonm'),
+        ...TRUCK_STATISTICS,
         statistic('sum', 'nonmotorist_counted', 'nonmotorists'), statistic('sum', 'num_bike', 'bicycles'),
         statistic('sum', 'num_veh', 'vehicles'), statistic('sum', 'num_occ', 'occupants'),
         statistic('sum', 'drv_speeding', 'speeding'), statistic('sum', 'drv_distracted', 'distracted'),
@@ -306,6 +321,9 @@ async function queryLinkedByYear(layer, ids, idField, where) {
       serious: Number(a.seriousOcc || 0) + Number(a.seriousNonm || 0),
       nonmotorists: Number(a.nonmotorists || 0), bicycles: Number(a.bicycles || 0),
       vehicles: Number(a.vehicles || 0), occupants: Number(a.occupants || 0),
+      largeTrucks: Number(a.singleUnitTrucks || 0) + Number(a.tractorTrailers || 0),
+      truckOccupants: Number(a.singleUnitTruckOccupants || 0) + Number(a.tractorTrailerOccupants || 0),
+      truckKaOccupants: Number(a.singleUnitTruckKa || 0) + Number(a.tractorTrailerKa || 0),
       speeding: Number(a.speeding || 0), distracted: Number(a.distracted || 0),
       impaired: Number(a.underInfluence || 0) + Number(a.alcohol || 0), unrestrained: Number(a.unrestrained || 0),
       youngDrivers: Number(a.youngDrivers || 0), olderDrivers: Number(a.olderDrivers || 0), workZones: Number(a.workZones || 0),
@@ -323,6 +341,7 @@ async function queryCrashesByYear(layer, where, assignment) {
       statistic('count', 'OBJECTID', 'crashes'),
       statistic('sum', 'num_K_occ', 'fatalOcc'), statistic('sum', 'num_K_nonm', 'fatalNonm'),
       statistic('sum', 'num_A_occ', 'seriousOcc'), statistic('sum', 'num_A_nonm', 'seriousNonm'),
+      ...TRUCK_STATISTICS,
       statistic('sum', 'nonmotorist_counted', 'nonmotorists'), statistic('sum', 'num_bike', 'bicycles'),
       statistic('sum', 'num_veh', 'vehicles'), statistic('sum', 'num_occ', 'occupants'),
       statistic('sum', 'drv_speeding', 'speeding'), statistic('sum', 'drv_distracted', 'distracted'),
@@ -344,6 +363,9 @@ async function queryCrashesByYear(layer, where, assignment) {
       serious: Number(a.seriousOcc || 0) + Number(a.seriousNonm || 0),
       nonmotorists: Number(a.nonmotorists || 0), bicycles: Number(a.bicycles || 0),
       vehicles: Number(a.vehicles || 0), occupants: Number(a.occupants || 0),
+      largeTrucks: Number(a.singleUnitTrucks || 0) + Number(a.tractorTrailers || 0),
+      truckOccupants: Number(a.singleUnitTruckOccupants || 0) + Number(a.tractorTrailerOccupants || 0),
+      truckKaOccupants: Number(a.singleUnitTruckKa || 0) + Number(a.tractorTrailerKa || 0),
       speeding: Number(a.speeding || 0), distracted: Number(a.distracted || 0),
       impaired: Number(a.underInfluence || 0) + Number(a.alcohol || 0),
       unrestrained: Number(a.unrestrained || 0), youngDrivers: Number(a.youngDrivers || 0),
@@ -353,13 +375,14 @@ async function queryCrashesByYear(layer, where, assignment) {
 }
 
 function periodTotal(map, ids, startYear, endYear) {
-  const total = { crashes: 0, fatal: 0, serious: 0, nonmotorists: 0, bicycles: 0, vehicles: 0, occupants: 0, speeding: 0, distracted: 0, impaired: 0, unrestrained: 0, youngDrivers: 0, olderDrivers: 0, workZones: 0, years: {}, severity: {} };
+  const total = { crashes: 0, fatal: 0, serious: 0, nonmotorists: 0, bicycles: 0, vehicles: 0, occupants: 0, largeTrucks: 0, truckOccupants: 0, truckKaOccupants: 0, speeding: 0, distracted: 0, impaired: 0, unrestrained: 0, youngDrivers: 0, olderDrivers: 0, workZones: 0, years: {}, severity: {} };
   for (const id of ids) {
     for (const row of map.get(String(id)) || []) {
       if (row.year >= startYear && row.year <= endYear) {
         total.crashes += row.crashes; total.fatal += row.fatal; total.serious += row.serious;
         total.nonmotorists += row.nonmotorists || 0; total.bicycles += row.bicycles || 0;
         total.vehicles += row.vehicles || 0; total.occupants += row.occupants || 0;
+        total.largeTrucks += row.largeTrucks || 0; total.truckOccupants += row.truckOccupants || 0; total.truckKaOccupants += row.truckKaOccupants || 0;
         total.speeding += row.speeding || 0; total.distracted += row.distracted || 0;
         total.impaired += row.impaired || 0; total.unrestrained += row.unrestrained || 0;
         total.youngDrivers += row.youngDrivers || 0; total.olderDrivers += row.olderDrivers || 0; total.workZones += row.workZones || 0;
@@ -390,6 +413,9 @@ function periodNetworkRows(rows, linkedYears, startYear, endYear, qualifyingYear
       bicycles: period.bicycles,
       vehicles: period.vehicles,
       occupants: period.occupants,
+      largeTrucks: period.largeTrucks,
+      truckOccupants: period.truckOccupants,
+      truckKaOccupants: period.truckKaOccupants,
       speeding: period.speeding,
       distracted: period.distracted,
       impaired: period.impaired,
@@ -406,6 +432,7 @@ const LINKED_ID_STATISTICS = [
   statistic('sum', "CASE WHEN severity IN ('K','A') THEN 1 ELSE 0 END", 'kaCrashes'),
   statistic('sum', 'num_K_occ', 'fatalOcc'), statistic('sum', 'num_K_nonm', 'fatalNonm'),
   statistic('sum', 'num_A_occ', 'seriousOcc'), statistic('sum', 'num_A_nonm', 'seriousNonm'),
+  ...TRUCK_STATISTICS,
   statistic('sum', 'nonmotorist_counted', 'nonmotorists'), statistic('sum', 'num_bike', 'bicycles'),
   statistic('sum', 'num_veh', 'vehicles'), statistic('sum', 'num_occ', 'occupants'),
   statistic('sum', 'drv_speeding', 'speeding'), statistic('sum', 'drv_distracted', 'distracted'),
@@ -429,6 +456,9 @@ function crashSummary(attributes = {}) {
     serious: Number(attributes.seriousOcc || 0) + Number(attributes.seriousNonm || 0),
     nonmotorists: Number(attributes.nonmotorists || 0), bicycles: Number(attributes.bicycles || 0),
     vehicles: Number(attributes.vehicles || 0), occupants: Number(attributes.occupants || 0),
+    largeTrucks: Number(attributes.singleUnitTrucks || 0) + Number(attributes.tractorTrailers || 0),
+    truckOccupants: Number(attributes.singleUnitTruckOccupants || 0) + Number(attributes.tractorTrailerOccupants || 0),
+    truckKaOccupants: Number(attributes.singleUnitTruckKa || 0) + Number(attributes.tractorTrailerKa || 0),
     speeding: Number(attributes.speeding || 0), distracted: Number(attributes.distracted || 0),
     impaired: Number(attributes.underInfluence || 0) + Number(attributes.alcohol || 0),
     unrestrained: Number(attributes.adultUnrestrained || 0) + Math.max(Number(attributes.child6Unrestrained || 0), Number(attributes.child8Unrestrained || 0), Number(attributes.child618Unrestrained || 0), Number(attributes.child818Unrestrained || 0)),
@@ -602,6 +632,9 @@ function crashPopupTemplate() {
         const vehicles = numeric(a, 'num_veh') || numeric(a, 'num_veh_count');
         const occupants = numeric(a, 'num_occ') || numeric(a, 'num_occ_count');
         const nonmotorists = numeric(a, 'nonmotorist_counted');
+        const largeTrucks = numeric(a, 'num_sut') + numeric(a, 'num_tt');
+        const truckOccupants = numeric(a, 'sut_occ') + numeric(a, 'tt_occ');
+        const truckKaOccupants = numeric(a, 'sut_KA') + numeric(a, 'tt_KA');
         const location = [a.city_name, a.county].filter(Boolean).join(', ') || 'the selected area';
         const date = a.date ? new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(a.date)) : 'an unrecorded date';
         const lead = document.createElement('p');
@@ -610,6 +643,11 @@ function crashPopupTemplate() {
         addPopupMetrics(wrap, [
           ['Highest severity', severity], ['People killed', killed], ['Seriously injured', seriouslyInjured],
           ['Vehicles', vehicles], ['Occupants', occupants], ['Nonmotorists', nonmotorists],
+        ]);
+        if (largeTrucks) addPopupDetails(wrap, 'Large-truck involvement', [
+          ['Large trucks involved', largeTrucks.toLocaleString()],
+          ['Recorded people inside large trucks', truckOccupants.toLocaleString()],
+          ['K/A people inside large trucks', truckKaOccupants.toLocaleString()],
         ]);
         addPopupChips(wrap, 'Recorded factors', [
           ['Speeding', numeric(a, 'drv_speeding')],
@@ -693,6 +731,10 @@ function popupTemplate(kind, crashLayer, filterRef) {
           ['Nonmotorists', periodMetrics.nonmotorists],
           ['Bicyclists', periodMetrics.bicycles],
         ];
+        if (activeFilters.mode === 'Truck') metrics.push(
+          ['Large trucks involved', periodMetrics.largeTrucks],
+          ['K/A people inside large trucks', periodMetrics.truckKaOccupants],
+        );
         addPopupMetrics(wrap, metrics);
         const a = graphic.attributes;
         const reasons = [];
@@ -1107,7 +1149,7 @@ function ExplorePanel({ filters, setFilters, visible, setVisible, selection, cle
     <section className="panel-section assignment-section"><h2>Network assignment</h2><label className="field"><span>Show network and crashes assigned to</span><select value={filters.assignment} onChange={(event) => patch({ assignment: event.target.value })}><option>All</option><option>Segment</option><option>Junction</option></select><ChevronDown size={17} /></label></section>
     {selection && <section className="focus-card"><button onClick={clearSelection} aria-label="Clear selected network feature"><X size={18} /></button><span>Selected {selection.type}</span><h3>{selection.name}</h3><p>{[selection.city, selection.county].filter(Boolean).join(' · ')}</p><div><b>{formatNumber(selection.crashes)}</b><small>{filters.startYear}–{filters.endYear} crashes</small><b>{formatNumber(selection.kaCrashes)}</b><small>fatal + serious crashes</small></div></section>}
     <section className="panel-section"><div className="crash-records-heading"><h2>Crash records</h2>{crashDataThrough && <small>Data through <b>{crashDataThrough}</b></small>}</div>
-      <div className="mode-control">{[['All modes', Car], ['Nonmotorist', Accessibility], ['Pedestrian', Footprints], ['Bicycle', Bike]].map(([mode, Icon]) => <button type="button" key={mode} className={filters.mode === mode ? 'active' : ''} onClick={() => patch({ mode })}><Icon size={17} />{mode}</button>)}</div>
+      <div className="mode-control">{[['All modes', Car], ['Nonmotorist', Accessibility], ['Pedestrian', Footprints], ['Bicycle', Bike], ['Truck', Truck]].map(([mode, Icon]) => <button type="button" key={mode} className={filters.mode === mode ? 'active' : ''} onClick={() => patch({ mode })}><Icon size={17} />{mode}</button>)}</div>
       <div className="period-row"><label><span>From</span><select value={filters.startYear} onChange={(e) => patch({ startYear: Math.min(Number(e.target.value), filters.endYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label><span>—</span><label><span>Through</span><select value={filters.endYear} onChange={(e) => patch({ endYear: Math.max(Number(e.target.value), filters.startYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label></div>
       <a className="kabco-note" href="https://highways.dot.gov/media/20141" target="_blank" rel="noreferrer" aria-label="Open the FHWA KABCO injury classification definitions"><CircleAlert size={17} /><span><strong>MAPA combined KABCO:</strong> Iowa and Nebraska source labels vary by state and reporting period. MAPA harmonizes them as K fatal, A serious injury, B minor injury, C possible injury, and O property damage only. <em>FHWA definitions ↗</em></span></a>
       <div className="severity-list">{SEVERITIES.map((item) => <button type="button" key={item.value} className={filters.severities.includes(item.value) ? 'active' : ''} onClick={() => toggleSeverity(item.value)} style={{ '--severity': item.color }}><i />{item.label}<span>{item.short}</span></button>)}</div>
@@ -1136,6 +1178,9 @@ function FiltersPanel({ filters, setFilters }) {
         <MultiSelect label="Traffic control" values={filters.roads.controls} options={CONTROL_OPTIONS} onChange={(v) => setRoad('controls', v)} />
       </div>
     </section>
+    <section className="panel-section filter-intro circumstances-section"><h2>Contributing Circumstances</h2><p>Show locations with crashes matching every selected circumstance. These choices use <strong>AND</strong> logic with all active filters.</p>
+      <MultiSelect label="Crash circumstances" values={filters.circumstances} options={CONTRIBUTING_CIRCUMSTANCES} onChange={(circumstances) => setFilters((current) => ({ ...current, circumstances }))} emptyLabel="All circumstances" />
+    </section>
   </>;
 }
 
@@ -1157,7 +1202,7 @@ function CrashAnalytics({ performance, period, networkLabel }) {
     ['Older drivers (65+)', 'olderDrivers'], ['Nonmotorists', 'nonmotorists'], ['Work-zone related', 'workZones'],
   ].map(([label, field]) => ({ label, value: Number(performance.roads[field] || 0) + Number(performance.intersections[field] || 0) }));
   const maxFactor = Math.max(1, ...factorRows.map((row) => row.value));
-  return <section className="analytics-section"><div className="section-heading"><div><span>{networkLabel} crash records</span><h2>Patterns in the displayed network</h2></div><small>{period}</small></div>
+  return <section className="analytics-section"><div className="section-heading"><div><span>{networkLabel === 'Crash Records' ? 'Filtered crash records' : `${networkLabel} crash records`}</span><h2>{networkLabel === 'Crash Records' ? 'Patterns in the selected area' : 'Patterns in the displayed network'}</h2></div><small>{period}</small></div>
     <article className="chart-card"><h3>Annual crash trend</h3><div className="year-chart">{yearRows.map((row) => <div key={row.year}><span title={`${formatNumber(row.value)} crashes`} style={{ height: `${Math.max(4, row.value / maxYear * 100)}%` }} /><b>{formatNumber(row.value)}</b><small>{row.year}</small></div>)}</div></article>
     <article className="chart-card"><h3>Crash records by highest severity</h3><div className="analysis-bars">{severityRows.map((row) => <div key={row.value + row.label}><span><i style={{ background: row.color }} />{row.label} crash</span><b>{formatNumber(row.value)}</b><em><i style={{ width: `${row.value / maxSeverity * 100}%`, background: row.color }} /></em></div>)}</div><p>This chart counts crash records. One crash can involve more than one injured person.</p></article>
     <article className="chart-card"><h3>Injury outcomes — people</h3><div className="analysis-bars">{outcomeRows.map((row) => <div key={row.label}><span><i style={{ background: row.color }} />{row.label}</span><b>{formatNumber(row.value)}</b><em><i style={{ width: `${row.value / maxOutcome * 100}%`, background: row.color }} /></em></div>)}</div></article>
@@ -1165,11 +1210,12 @@ function CrashAnalytics({ performance, period, networkLabel }) {
   </section>;
 }
 
-function PerformancePanel({ performance, loading, impacts, onFocusImpact, period, networkMode, assignment, selectionCount, crashTimeActive }) {
+function PerformancePanel({ performance, loading, impacts, onFocusImpact, period, networkMode, assignment, selectionCount, crashTimeActive, mode }) {
   const [impactType, setImpactType] = useState('segment');
   const impactRows = impacts[impactType] || [];
   const safetyMode = networkMode === 'safety';
-  const networkLabel = safetyMode ? 'All Safety Network' : 'High Injury Network';
+  const crashMode = networkMode === 'crashes';
+  const networkLabel = crashMode ? 'Crash Records' : safetyMode ? 'All Safety Network' : 'High Injury Network';
   const networkShort = safetyMode ? 'safety network' : 'HIN';
   const showRoads = assignment !== 'Junction';
   const showIntersections = assignment !== 'Segment';
@@ -1181,6 +1227,10 @@ function PerformancePanel({ performance, loading, impacts, onFocusImpact, period
   const areaCrashes = performance.baseRoads.crashes + performance.baseIntersections.crashes;
   const totalFatal = performance.roads.fatal + performance.intersections.fatal;
   const totalSerious = performance.roads.serious + performance.intersections.serious;
+  const totalLargeTrucks = Number(performance.roads.largeTrucks || 0) + Number(performance.intersections.largeTrucks || 0);
+  const totalTruckOccupants = Number(performance.roads.truckOccupants || 0) + Number(performance.intersections.truckOccupants || 0);
+  const totalTruckKaOccupants = Number(performance.roads.truckKaOccupants || 0) + Number(performance.intersections.truckKaOccupants || 0);
+  const totalOtherKaPeople = Math.max(0, totalFatal + totalSerious - totalTruckKaOccupants);
   const roadCoverage = percent(performance.roads.miles, performance.baseRoads.miles);
   const intCoverage = percent(performance.intersections.count, performance.baseIntersections.count);
   const roadCapture = percent(roadFsi, baseRoadFsi);
@@ -1189,19 +1239,20 @@ function PerformancePanel({ performance, loading, impacts, onFocusImpact, period
   const intRatio = concentrationRatio(intersectionFsi, performance.intersections.count, baseIntersectionFsi, performance.baseIntersections.count);
   return <>
     <section className="performance">
-      <div className="performance-title"><span>Network performance</span><h2>What are the statistics of the network?</h2><p>Statistics cover <b>{period}</b> for the <b>{networkLabel}</b> and update with the active census-boundary location, assignment, network filters{crashTimeActive ? ', crash-record time filters' : ''}{selectionCount ? `, and ${selectionCount.toLocaleString()} selected network locations` : ''}.</p></div>
-      {loading ? <div className="loading-block">Updating network statistics…</div> : <>
-        <div className="performance-total"><span>Crashes on the displayed {networkShort}</span><strong>{formatNumber(totalCrashes)}</strong><small>{formatNumber(areaCrashes)} matching crashes occurred across the entire selected area</small><div>{showRoads && <p><b>{percent(performance.roads.crashes, totalCrashes)}%</b>occurred on roadways</p>}{showIntersections && <p><b>{percent(performance.intersections.crashes, totalCrashes)}%</b>occurred at intersections</p>}</div></div>
+      <div className="performance-title"><span>{crashMode ? 'Crash record insights' : 'Network performance'}</span><h2>{crashMode ? 'What do the filtered crashes show?' : 'What are the statistics of the network?'}</h2><p>{crashMode ? <>Statistics cover <b>{period}</b> for all matching <b>Crash Records</b> in the selected area. No HIN or All Safety Network scope is applied.</> : <>Statistics cover <b>{period}</b> for the <b>{networkLabel}</b> and update with the active census-boundary location, assignment, network filters{crashTimeActive ? ', crash-record time filters' : ''}{selectionCount ? `, and ${selectionCount.toLocaleString()} selected network locations` : ''}.</>}</p></div>
+      {loading ? <div className="loading-block">Updating {crashMode ? 'crash' : 'network'} statistics…</div> : <>
+        <div className="performance-total"><span>{crashMode ? 'Matching crash records in the selected area' : `Crashes on the displayed ${networkShort}`}</span><strong>{formatNumber(totalCrashes)}</strong><small>{crashMode ? 'The map points and analytics use this same filtered crash-record set.' : `${formatNumber(areaCrashes)} matching crashes occurred across the entire selected area`}</small><div>{showRoads && <p><b>{percent(performance.roads.crashes, totalCrashes)}%</b>occurred on roadways</p>}{showIntersections && <p><b>{percent(performance.intersections.crashes, totalCrashes)}%</b>occurred at intersections</p>}</div></div>
         <div className="performance-total"><span>People killed or seriously injured</span><strong>{formatNumber(totalFatal + totalSerious)}</strong><small>People killed: <b>{formatNumber(totalFatal)}</b> · People seriously injured: <b>{formatNumber(totalSerious)}</b></small><div>{showRoads && <p><b>{percent(roadFsi, totalFatal + totalSerious)}%</b>on roadways</p>}{showIntersections && <p><b>{percent(intersectionFsi, totalFatal + totalSerious)}%</b>at intersections</p>}</div></div>
-        <div className="network-profile"><h3>Network pulse</h3><div>{showRoads && <span><b>{formatNumber(performance.roads.miles, 1)}</b>{networkShort} roadway miles</span>}{showIntersections && <span><b>{formatNumber(performance.intersections.count)}</b>{networkShort} intersections</span>}<span><b>{formatNumber((performance.roads.nonmotorists || 0) + (performance.intersections.nonmotorists || 0))}</b>nonmotorists recorded</span><span><b>{formatNumber((performance.roads.vehicles || 0) + (performance.intersections.vehicles || 0))}</b>vehicles involved</span></div></div>
-        {safetyMode ? <div className="comparison whole-network"><h3>Entire safety network view</h3><p>The All Safety Network is the full comparison baseline for the selected location and assignment. Turn this layer off to return the performance panel to the period-filtered HIN comparison.</p></div> : <div className="comparison"><h3>How does it compare to the entire network?</h3><div className="comparison-method"><strong>KSI concentration</strong><span>Relative to the full selected safety-network average</span></div><p>Uses the same census-boundary location, crash period and timing, severity, travel mode, and Safer People filters.</p>
+        <div className="network-profile"><h3>{crashMode ? 'Crash record pulse' : 'Network pulse'}</h3><div>{crashMode ? <><span><b>{formatNumber(performance.roads.crashes)}</b>roadway-assigned crashes</span><span><b>{formatNumber(performance.intersections.crashes)}</b>intersection-assigned crashes</span></> : <>{showRoads && <span><b>{formatNumber(performance.roads.miles, 1)}</b>{networkShort} roadway miles</span>}{showIntersections && <span><b>{formatNumber(performance.intersections.count)}</b>{networkShort} intersections</span>}</>}<span><b>{formatNumber((performance.roads.nonmotorists || 0) + (performance.intersections.nonmotorists || 0))}</b>nonmotorists recorded</span><span><b>{formatNumber((performance.roads.vehicles || 0) + (performance.intersections.vehicles || 0))}</b>vehicles involved</span></div></div>
+        {mode === 'Truck' && <div className="truck-context"><div className="truck-context-heading"><h3>Truck crash context</h3><p>A truck-involved crash contains at least one single-unit or tractor/trailer truck. K/A means killed or seriously injured; occupant totals reflect recorded occupants.</p></div><div className="truck-context-grid"><span><b>{formatNumber(totalLargeTrucks)}</b>large trucks involved</span><span><b>{formatNumber(totalTruckOccupants)}</b>recorded people inside large trucks</span><span><b>{formatNumber(totalTruckKaOccupants)}</b>K/A people inside large trucks</span><span><b>{formatNumber(totalOtherKaPeople)}</b>K/A people outside large trucks<small>Other vehicles and nonmotorists</small></span></div></div>}
+        {crashMode ? <div className="comparison whole-network"><h3>Crash-record view</h3><p>These results describe all matching crash points in the selected area. Turn on High Injury Network or All Safety Network to constrain the analytics to that network.</p></div> : safetyMode ? <div className="comparison whole-network"><h3>Entire safety network view</h3><p>The All Safety Network is the full comparison baseline for the selected location and assignment. If it is turned off, the panel follows the HIN when visible; otherwise it reports all filtered crash records.</p></div> : <div className="comparison"><h3>How does it compare to the entire network?</h3><div className="comparison-method"><strong>KSI concentration</strong><span>Relative to the full selected safety-network average</span></div><p>Uses the same census-boundary location, crash period and timing, severity, travel mode, and Safer People filters.</p>
           <div className="comparison-grid">{showRoads && <article><h4>Roadways</h4><p>{roadRatio == null ? <>A concentration multiplier is not shown when fewer than five fatal or serious injuries are selected.</> : <>Fatal-and-serious-injury concentration is <strong>{formatNumber(roadRatio, 1)}×</strong> the roadway-network average.</>}</p><div className="coverage"><span><b>{roadCoverage}%</b>of all roadway miles</span><i /><span><b>{roadCapture}%</b>of roadway fatalities and serious injuries</span></div></article>}
           {showIntersections && <article><h4>Intersections</h4><p>{intRatio == null ? <>A concentration multiplier is not shown when fewer than five fatal or serious injuries are selected.</> : <>Fatal-and-serious-injury concentration is <strong>{formatNumber(intRatio, 1)}×</strong> the intersection-network average.</>}</p><div className="coverage"><span><b>{intCoverage}%</b>of all intersections</span><i /><span><b>{intCapture}%</b>of intersection fatalities and serious injuries</span></div></article>}</div>
         </div>}
       </>}
     </section>
     {!loading && <CrashAnalytics performance={performance} period={period} networkLabel={networkLabel} />}
-    <section className="corridors"><div className="section-heading"><div><span>High-impact HIN</span><h2>Highest-impact {impactType === 'segment' ? 'roads' : 'intersections'}</h2></div><small>Trend: 2021–2025 vs. 2018–2022</small></div><div className="impact-tabs"><button className={impactType === 'segment' ? 'active' : ''} onClick={() => setImpactType('segment')}>Roads</button><button className={impactType === 'intersection' ? 'active' : ''} onClick={() => setImpactType('intersection')}>Intersections</button></div><div className="corridor-list">{impactRows.slice(0, 12).map((item, index) => <button key={item.key} onClick={() => onFocusImpact(item)}><b>{index + 1}</b><span><strong>{item.name}</strong><small>{item.city || 'MAPA region'}</small><em>{formatNumber(item.fsi)} fatal / serious injuries · <i className={`trend-${item.trend.toLowerCase().replaceAll(' ', '-')}`}>{item.trend}</i></em></span></button>)}{!impactRows.length && <p className="empty">No HIN locations are available for this location.</p>}</div></section>
+    {!crashMode && <section className="corridors"><div className="section-heading"><div><span>High-impact HIN</span><h2>Highest-impact {impactType === 'segment' ? 'roads' : 'intersections'}</h2></div><small>Trend: 2021–2025 vs. 2018–2022</small></div><div className="impact-tabs"><button className={impactType === 'segment' ? 'active' : ''} onClick={() => setImpactType('segment')}>Roads</button><button className={impactType === 'intersection' ? 'active' : ''} onClick={() => setImpactType('intersection')}>Intersections</button></div><div className="corridor-list">{impactRows.slice(0, 12).map((item, index) => <button key={item.key} onClick={() => onFocusImpact(item)}><b>{index + 1}</b><span><strong>{item.name}</strong><small>{item.city || 'MAPA region'}</small><em>{formatNumber(item.fsi)} fatal / serious injuries · <i className={`trend-${item.trend.toLowerCase().replaceAll(' ', '-')}`}>{item.trend}</i></em></span></button>)}{!impactRows.length && <p className="empty">No HIN locations are available for this location.</p>}</div></section>}
   </>;
 }
 
@@ -1309,6 +1360,7 @@ export default function App() {
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState('segment');
+  const analysisMode = analysisModeForLayers(visible);
 
   const reset = () => { setFilters(DEFAULT_FILTERS); setSelection(null); setSpatialSelection(null); mapApi?.clearSelection(); mapApi?.clearSpatialSelection(); };
   const clearSelection = () => { setSelection(null); mapApi?.clearSelection(); };
@@ -1382,29 +1434,31 @@ export default function App() {
         const currentCrashWhere = buildCrashWhere(filters);
         const relationshipCrashWhere = buildCrashWhere(relationshipFilters);
         const qualificationCrashWhere = buildCrashWhere(qualificationFilters);
-        const safetyMode = visible.safety;
+        const safetyMode = analysisMode === 'safety';
+        const crashOnlyMode = analysisMode === 'crashes';
+        const wholeAreaCrashMode = safetyMode || crashOnlyMode;
         const filterSafetyByCrash = filters.startYear !== YEAR_MIN
           || filters.endYear !== yearMax
           || filters.mode !== 'All modes'
           || SEVERITIES.some((severity) => !filters.severities.includes(severity.value))
           || Object.values(filters.people).some(Boolean);
         const [segments, intersections, baseRoadUnits, baseIntersectionUnits, baseRoadCrashes, baseIntersectionCrashes, safetyRoadUnits, safetyIntersectionUnits, safetyRoadYears, safetyIntersectionYears] = await Promise.all([
-          safetyMode ? Promise.resolve([]) : queryNetworkRows(mapApi.layers.querySegments, segmentWhere, 'segment'),
-          safetyMode ? Promise.resolve([]) : queryNetworkRows(mapApi.layers.queryIntersections, intersectionWhere, 'intersection'),
+          wholeAreaCrashMode ? Promise.resolve([]) : queryNetworkRows(mapApi.layers.querySegments, segmentWhere, 'segment'),
+          wholeAreaCrashMode ? Promise.resolve([]) : queryNetworkRows(mapApi.layers.queryIntersections, intersectionWhere, 'intersection'),
           querySafetyBase(mapApi.layers.querySegments, baseSegmentWhere, 'segment'),
           querySafetyBase(mapApi.layers.queryIntersections, baseIntersectionWhere, 'intersection'),
           queryCrashBase(mapApi.layers.queryCrashes, currentCrashWhere, 'Segment'),
           queryCrashBase(mapApi.layers.queryCrashes, currentCrashWhere, 'Junction'),
           safetyMode ? querySafetyBase(mapApi.layers.querySegments, safetySegmentWhere, 'segment') : Promise.resolve(null),
           safetyMode ? querySafetyBase(mapApi.layers.queryIntersections, safetyIntersectionWhere, 'intersection') : Promise.resolve(null),
-          safetyMode ? queryCrashesByYear(mapApi.layers.queryCrashes, currentCrashWhere, 'Segment') : Promise.resolve(null),
-          safetyMode ? queryCrashesByYear(mapApi.layers.queryCrashes, currentCrashWhere, 'Junction') : Promise.resolve(null),
+          wholeAreaCrashMode ? queryCrashesByYear(mapApi.layers.queryCrashes, currentCrashWhere, 'Segment') : Promise.resolve(null),
+          wholeAreaCrashMode ? queryCrashesByYear(mapApi.layers.queryCrashes, currentCrashWhere, 'Junction') : Promise.resolve(null),
         ]);
         const [segmentYears, intersectionYears, segmentQualificationYears, intersectionQualificationYears] = await Promise.all([
-          safetyMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, segments.map((row) => row.id), 'assigned_segment_id', relationshipCrashWhere),
-          safetyMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, intersections.map((row) => row.id), 'assigned_junction_id', relationshipCrashWhere),
-          safetyMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, segments.map((row) => row.id), 'assigned_segment_id', qualificationCrashWhere),
-          safetyMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, intersections.map((row) => row.id), 'assigned_junction_id', qualificationCrashWhere),
+          wholeAreaCrashMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, segments.map((row) => row.id), 'assigned_segment_id', relationshipCrashWhere),
+          wholeAreaCrashMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, intersections.map((row) => row.id), 'assigned_junction_id', relationshipCrashWhere),
+          wholeAreaCrashMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, segments.map((row) => row.id), 'assigned_segment_id', qualificationCrashWhere),
+          wholeAreaCrashMode ? Promise.resolve(new Map()) : queryLinkedByYear(mapApi.layers.queryCrashes, intersections.map((row) => row.id), 'assigned_junction_id', qualificationCrashWhere),
         ]);
         if (cancelled) return;
         const periodSegments = periodNetworkRows(segments, segmentYears, filters.startYear, filters.endYear, segmentQualificationYears);
@@ -1412,7 +1466,7 @@ export default function App() {
         const [activeSegments, activeIntersections] = safetyMode ? await Promise.all([
           queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.querySegments, networkFilters, 'segment'),
           queryActiveSafetyRows(mapApi.layers.queryCrashes, mapApi.layers.queryIntersections, networkFilters, 'intersection'),
-        ]) : [periodSegments, periodIntersections];
+        ]) : crashOnlyMode ? [[], []] : [periodSegments, periodIntersections];
         if (cancelled) return;
         const selectedSegments = spatialSelection ? activeSegments.filter((row) => spatialSelection.segment.includes(Number(row.objectId))) : activeSegments;
         const selectedIntersections = spatialSelection ? activeIntersections.filter((row) => spatialSelection.intersection.includes(Number(row.objectId))) : activeIntersections;
@@ -1444,15 +1498,17 @@ export default function App() {
         const selectedSafetyIntersection = safetyMode && spatialSelection && exactCrashTime
           ? { ...aggregateNetworkRows(selectedIntersections), ...periodTotal(selectedSafetyIntersectionYears, selectedIntersections.map((row) => row.id), filters.startYear, filters.endYear) }
           : aggregateNetworkRows(selectedIntersections);
-        const roadCrash = safetyMode
-          ? spatialSelection ? selectedSafetyRoad : { ...safetyRoadUnits, ...periodTotal(safetyRoadYears, ['Segment'], filters.startYear, filters.endYear) }
-          : hinRoad;
-        const intCrash = safetyMode
-          ? spatialSelection ? selectedSafetyIntersection : { ...safetyIntersectionUnits, ...periodTotal(safetyIntersectionYears, ['Junction'], filters.startYear, filters.endYear) }
-          : hinIntersection;
+        const wholeAreaRoad = wholeAreaCrashMode ? periodTotal(safetyRoadYears, ['Segment'], filters.startYear, filters.endYear) : null;
+        const wholeAreaIntersection = wholeAreaCrashMode ? periodTotal(safetyIntersectionYears, ['Junction'], filters.startYear, filters.endYear) : null;
+        const roadCrash = crashOnlyMode
+          ? wholeAreaRoad
+          : safetyMode ? spatialSelection ? selectedSafetyRoad : { ...safetyRoadUnits, ...wholeAreaRoad } : hinRoad;
+        const intCrash = crashOnlyMode
+          ? wholeAreaIntersection
+          : safetyMode ? spatialSelection ? selectedSafetyIntersection : { ...safetyIntersectionUnits, ...wholeAreaIntersection } : hinIntersection;
         setNetworkRows({
-          segment: selectedSegments.map((row) => ({ ...row, networkMode: safetyMode ? 'safety' : 'hin' })),
-          intersection: selectedIntersections.map((row) => ({ ...row, networkMode: safetyMode ? 'safety' : 'hin' })),
+          segment: crashOnlyMode ? [] : selectedSegments.map((row) => ({ ...row, networkMode: safetyMode ? 'safety' : 'hin' })),
+          intersection: crashOnlyMode ? [] : selectedIntersections.map((row) => ({ ...row, networkMode: safetyMode ? 'safety' : 'hin' })),
         });
         setPerformance({
           roads: roadCrash,
@@ -1465,7 +1521,7 @@ export default function App() {
       } finally { if (!cancelled) setAnalyticsLoading(false); }
     }, 320);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [filters, mapApi, yearMax, visible.safety, spatialSelection]);
+  }, [filters, mapApi, yearMax, analysisMode, spatialSelection]);
 
   const impacts = useMemo(() => Object.fromEntries(['segment', 'intersection'].map((type) => {
     const grouped = new Map();
@@ -1507,8 +1563,8 @@ export default function App() {
     <header className="topbar"><a className="brand-link" href="https://www.mapacog.org" target="_blank" rel="noreferrer" aria-label="Visit the MAPA website"><img src="./mapa-logo.png" alt="Metropolitan Area Planning Agency" /></a><div className="product-name"><span>Safety planning</span><h1>High Injury Network</h1></div><div className="top-actions"><div className="status-wrap" onMouseEnter={() => setStatusHovered(true)} onMouseLeave={() => setStatusHovered(false)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setStatusPinned(false); }}><button className={`status-button ${hasNotice ? 'notice' : ''}`} onClick={() => setStatusPinned((current) => !current)} onFocus={() => setStatusPinned(true)} onKeyDown={(event) => { if (event.key === 'Escape') { setStatusPinned(false); setStatusHovered(false); event.currentTarget.blur(); } }} aria-expanded={showStatus} aria-controls="data-status-popover"><CircleAlert size={16} />{mapStatus === 'loading' ? 'Loading data' : hasNotice ? 'Data notice' : 'Data is current'}</button>{showStatus && <div id="data-status-popover" className="status-popover"><strong>{hasNotice ? 'Data notice' : 'Data is current'}</strong><p>{statusMessage}</p><small>This control reports connection or query issues; it does not change the map.</small></div>}</div><ShareDialog filters={filters} visible={visible} /><button onClick={reset}><RefreshCcw size={17} />Reset filters</button><button className="mobile-menu" onClick={() => setMobilePanel(mobilePanel === 'filters' ? 'map' : 'filters')}><Menu size={22} /></button></div></header>
     <div className={`workspace ${leftCollapsed ? 'left-collapsed' : ''}`}>
       <aside className="left-panel"><nav><button className={leftTab === 'explore' ? 'active' : ''} onClick={() => setLeftTab('explore')}><Layers3 size={18} />Explore</button><button className={leftTab === 'filters' ? 'active' : ''} onClick={() => setLeftTab('filters')}><Filter size={18} />Filters</button></nav><div className="panel-scroll">{leftTab === 'explore' ? <ExplorePanel filters={filters} setFilters={setFilters} visible={visible} setVisible={setVisible} selection={selection} clearSelection={clearSelection} yearMax={yearMax} dateBounds={dateBounds} crashDataThrough={crashDataThrough} /> : <FiltersPanel filters={filters} setFilters={setFilters} />}</div></aside>
-      <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { if (!record) { setSelection(null); return; } const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><SelectionSummary count={selectedFeatureCount} onZoom={() => mapApi?.zoomSelection()} /><div className="map-key">{visible.hin && <><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span></>}{visible.safety && <span><i className="safety" />Safety network</span>}{visible.crashes && <span><i className="crash" />Crash severity</span>}</div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={visible.safety ? 'All Safety Network' : 'High Injury Network'} /></section>
-      <aside className="insights-panel"><div className="insights-scroll"><PerformancePanel performance={performance} loading={analyticsLoading} impacts={impacts} onFocusImpact={focusImpact} period={`${filters.startYear}–${filters.endYear}`} networkMode={visible.safety ? 'safety' : 'hin'} assignment={filters.assignment} selectionCount={spatialSelection ? spatialSelection.segment.length + spatialSelection.intersection.length : 0} crashTimeActive={hasCrashTimeFilter(filters)} /></div></aside>
+      <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { if (!record) { setSelection(null); return; } const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><SelectionSummary count={selectedFeatureCount} onZoom={() => mapApi?.zoomSelection()} /><div className="map-key">{visible.hin && <><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span></>}{visible.safety && <span><i className="safety" />Safety network</span>}{visible.crashes && <span><i className="crash" />Crash severity</span>}</div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={analysisMode === 'safety' ? 'All Safety Network' : analysisMode === 'crashes' ? 'No network layer selected' : 'High Injury Network'} /></section>
+      <aside className="insights-panel"><div className="insights-scroll"><PerformancePanel performance={performance} loading={analyticsLoading} impacts={impacts} onFocusImpact={focusImpact} period={`${filters.startYear}–${filters.endYear}`} networkMode={analysisMode} assignment={filters.assignment} selectionCount={spatialSelection ? spatialSelection.segment.length + spatialSelection.intersection.length : 0} crashTimeActive={hasCrashTimeFilter(filters)} mode={filters.mode} /></div></aside>
     </div>
     <nav className="mobile-nav"><button className={mobilePanel === 'map' ? 'active' : ''} onClick={() => setMobilePanel('map')}><MapIcon size={21} />Map</button><button className={mobilePanel === 'filters' ? 'active' : ''} onClick={() => setMobilePanel('filters')}><SlidersHorizontal size={21} />Explore</button><button className={mobilePanel === 'insights' ? 'active' : ''} onClick={() => setMobilePanel('insights')}><BarChart3 size={21} />Insights</button><button className={drawerOpen ? 'active' : ''} onClick={() => { setDrawerOpen(true); setMobilePanel('map'); }}><Table2 size={21} />Data</button></nav>
   </main>;

@@ -48,6 +48,24 @@ export const FUNCTIONAL_CLASSES = [
   { value: 99, label: 'Not classified' },
 ];
 
+export const CONTRIBUTING_CIRCUMSTANCES = [
+  { value: 'wetSurface', label: 'Wet surface' },
+  { value: 'winterSurface', label: 'Snow, ice, or slush surface' },
+  { value: 'standingWater', label: 'Standing water' },
+  { value: 'precipitation', label: 'Precipitation' },
+  { value: 'reducedVisibility', label: 'Fog, smoke, or blowing weather' },
+  { value: 'severeWinds', label: 'Severe winds' },
+  { value: 'glare', label: 'Glare' },
+  { value: 'visualObstruction', label: 'Visual obstruction' },
+  { value: 'animalRoadway', label: 'Animal in roadway' },
+  { value: 'workZone', label: 'Work zone' },
+  { value: 'debris', label: 'Debris' },
+  { value: 'roughRoad', label: 'Ruts, holes, or bumps' },
+  { value: 'shoulderCondition', label: 'Shoulder condition' },
+  { value: 'slipperySurface', label: 'Slippery, loose, or worn surface' },
+  { value: 'jackknife', label: 'Jackknife' },
+];
+
 export const DEFAULT_FILTERS = {
   startYear: YEAR_MIN,
   endYear: YEAR_MAX,
@@ -59,6 +77,7 @@ export const DEFAULT_FILTERS = {
   crashEndDate: '',
   months: [],
   transition: 'All times',
+  circumstances: [],
   people: { impaired: false, unrestrained: false, speeding: false, distracted: false, youngDriver: false },
   roads: { speeds: [], classes: [], intersectionTypes: [], controls: [] },
 };

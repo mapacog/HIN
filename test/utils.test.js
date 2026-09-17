@@ -1,14 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCrashWhere, buildNetworkWhere, classifyTrend, concentrationRatio, escapeSqlLiteral,
+  analysisModeForLayers, buildCrashWhere, buildNetworkWhere, classifyTrend, concentrationRatio, escapeSqlLiteral,
   normalizeNetworkFeature, parseLocation, rateRatio, toCsv,
 } from '../src/utils.js';
+
+test('analytics follow the visible network and do not fall back to HIN in crash-only view', () => {
+  assert.equal(analysisModeForLayers({ safety: true, hin: false, crashes: true }), 'safety');
+  assert.equal(analysisModeForLayers({ safety: false, hin: true, crashes: true }), 'hin');
+  assert.equal(analysisModeForLayers({ safety: false, hin: false, crashes: true }), 'crashes');
+  assert.equal(analysisModeForLayers({ safety: false, hin: false, crashes: false }), 'hin');
+});
 
 const base = {
   startYear: 2021, endYear: 2025,
   severities: ['K', 'A', 'B', 'C', 'O'], location: '', assignment: 'All', mode: 'All modes',
   crashStartDate: '', crashEndDate: '', months: [], transition: 'All times',
+  circumstances: [],
   people: { impaired: false, unrestrained: false, speeding: false, distracted: false, youngDriver: false },
   roads: { speeds: [], classes: [], intersectionTypes: [], controls: [] },
 };
@@ -27,10 +35,22 @@ test('trend compares 2021–2025 with 2018–2022 and excludes 2026', () => {
   assert.equal(classifyTrend([2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025].map((year) => ({ year, count: 3 }))), 'About the same');
 });
 
-test('nonmotorist, pedestrian, and bicycle modes always require a counted nonmotorist', () => {
+test('travel-mode filters use their published crash and network count fields', () => {
   assert.match(buildCrashWhere({ ...base, mode: 'Nonmotorist' }), /nonmotorist_counted <> 0/);
   assert.match(buildCrashWhere({ ...base, mode: 'Bicycle' }), /nonmotorist_counted <> 0 AND num_bike <> 0/);
   assert.match(buildCrashWhere({ ...base, mode: 'Pedestrian' }), /nonmotorist_counted <> 0/);
+  assert.match(buildCrashWhere({ ...base, mode: 'Truck' }), /num_sut > 0 OR num_tt > 0/);
+  assert.match(buildNetworkWhere({ ...base, mode: 'Truck' }, 'segment'), /num_sut > 0 OR num_tt > 0/);
+});
+
+test('contributing circumstances use source-appropriate fields and combine with AND logic', () => {
+  const filtered = { ...base, circumstances: ['wetSurface', 'precipitation', 'jackknife'] };
+  const crash = buildCrashWhere(filtered);
+  assert.match(crash, /surface_cond = 'Wet' AND \(weather_cond_1 IN/);
+  assert.match(crash, /AND first_harmful_event = 'Jackknife'/);
+  const network = buildNetworkWhere(filtered, 'segment');
+  assert.match(network, /surface_wet > 0 AND \(weather_rain > 0 OR weather_snow > 0 OR weather_sleet > 0\)/);
+  assert.match(network, /AND first_harm_event_counts LIKE '%"Jackknife"%'/);
 });
 
 test('crash filters combine location, severity, safer people, and the selected segment', () => {
