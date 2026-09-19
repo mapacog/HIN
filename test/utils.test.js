@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  analysisModeForLayers, buildCrashWhere, buildNetworkWhere, classifyTrend, concentrationRatio, escapeSqlLiteral,
+  analysisModeForLayers, buildCrashWhere, buildNetworkWhere, classifyTrend, combineReportedValues, concentrationRatio, escapeSqlLiteral,
   normalizeNetworkFeature, parseLocation, rateRatio, toCsv,
 } from '../src/utils.js';
 
@@ -50,7 +50,32 @@ test('contributing circumstances use source-appropriate fields and combine with 
   assert.match(crash, /AND first_harmful_event = 'Jackknife'/);
   const network = buildNetworkWhere(filtered, 'segment');
   assert.match(network, /surface_wet > 0 AND \(weather_rain > 0 OR weather_snow > 0 OR weather_sleet > 0\)/);
-  assert.match(network, /AND first_harm_event_counts LIKE '%"Jackknife"%'/);
+  assert.match(network, /AND first_harm_event_counts LIKE '%Jackknife:%'/);
+});
+
+test('network circumstance fields use their published text-count format and include audited categories', () => {
+  const filtered = { ...base, circumstances: ['roadwayObstruction', 'trafficControlIssue', 'nonHighwayWork', 'looseSurface'] };
+  const crash = buildCrashWhere(filtered);
+  assert.match(crash, /CBC_envs LIKE '%"Obstruction in roadway"%'/);
+  assert.match(crash, /CBC_envs LIKE '%"Traffic control issue"%'/);
+  assert.match(crash, /CBC_envs LIKE '%"Non-highway work"%'/);
+  assert.match(crash, /surface_cond = 'Sand\/mud\/dirt\/gravel'/);
+  const network = buildNetworkWhere(filtered, 'segment');
+  assert.match(network, /CBC_envs_counts LIKE '%Obstruction in roadway:%'/);
+  assert.match(network, /CBC_envs_counts LIKE '%Traffic control issue:%'/);
+  assert.match(network, /CBC_envs_counts LIKE '%Non-highway work:%'/);
+  assert.match(network, /surface_sand > 0/);
+  const existingChoices = buildNetworkWhere({ ...base, circumstances: ['glare', 'workZone'] }, 'intersection');
+  assert.match(existingChoices, /CBC_envs_counts LIKE '%Glare:%'/);
+  assert.match(existingChoices, /wz_related > 0 OR CBC_envs_counts LIKE '%Work zone:%'/);
+});
+
+test('paired report values suppress Not reported only when a meaningful companion exists', () => {
+  assert.equal(combineReportedValues(['Rain', 'Not reported']), 'Rain');
+  assert.equal(combineReportedValues(['Not reported', 'Not reported']), 'Not reported');
+  assert.equal(combineReportedValues(['Rain', 'Snow']), 'Rain / Snow');
+  assert.equal(combineReportedValues(['Rain', 'Rain']), 'Rain');
+  assert.equal(combineReportedValues([null, '']), 'Not recorded');
 });
 
 test('crash filters combine location, severity, safer people, and the selected segment', () => {

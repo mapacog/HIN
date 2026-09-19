@@ -24,7 +24,7 @@ import {
   WEBMAP_ID, YEAR_MAX, YEAR_MIN,
 } from './config.js';
 import {
-  analysisModeForLayers, buildCrashWhere, buildNetworkWhere, chunk, classifyTrend, concentrationRatio, escapeSqlLiteral,
+  analysisModeForLayers, buildCrashWhere, buildNetworkWhere, chunk, classifyTrend, combineReportedValues, concentrationRatio, escapeSqlLiteral,
   formatNumber, normalizeNetworkFeature, parseLocation, percent,
 } from './utils.js';
 import { exportNetwork } from './exports.js';
@@ -662,10 +662,10 @@ function crashPopupTemplate() {
           ['Ejected', numeric(a, 'num_ejected')],
           ['Trapped', numeric(a, 'num_trapped')],
         ], 'Only recorded indicators are shown; categories may overlap.');
-        const weather = [a.weather_cond_1, a.weather_cond_2].filter((value, index, values) => value && value !== values[index - 1]).join(' / ');
+        const weather = combineReportedValues([a.weather_cond_1, a.weather_cond_2]);
         addPopupDetails(wrap, 'Crash circumstances', [
           ['Day / time', [a.day, a.time].filter(Boolean).join(' · ') || 'Not recorded'],
-          ['Light', fieldText(a.light_cond)], ['Weather', fieldText(weather)], ['Surface', fieldText(a.surface_cond)],
+          ['Light', fieldText(a.light_cond)], ['Weather', weather], ['Surface', fieldText(a.surface_cond)],
           ['Manner of collision', fieldText(a.manner_of_collision)], ['First harmful event', fieldText(a.first_harmful_event)],
           ['Event location', fieldText(a.first_harm_location)],
         ]);
@@ -738,9 +738,13 @@ function popupTemplate(kind, crashLayer, filterRef) {
         addPopupMetrics(wrap, metrics);
         const a = graphic.attributes;
         const reasons = [];
-        if (activeFilters.mode !== 'All modes') reasons.push(activeFilters.mode.toLowerCase());
-        for (const [key, labelText] of Object.entries({ impaired: 'impaired', unrestrained: 'unrestrained', speeding: 'speeding', distracted: 'distracted-driving', youngDriver: 'young-driver' })) if (activeFilters.people[key]) reasons.push(labelText);
-        if (reasons.length) { const reason = document.createElement('p'); reason.className = 'popup-reason'; reason.textContent = `Shown because this location has ${reasons.join(' + ')} crash attributes in the safety network.`; wrap.append(reason); }
+        if (activeFilters.mode !== 'All modes') reasons.push(`${activeFilters.mode.toLowerCase()} involvement`);
+        for (const [key, labelText] of Object.entries({ impaired: 'impaired driving', unrestrained: 'unrestrained occupants', speeding: 'speeding', distracted: 'distracted driving', youngDriver: 'a driver under 25' })) if (activeFilters.people[key]) reasons.push(labelText);
+        for (const value of activeFilters.circumstances || []) {
+          const labelText = CONTRIBUTING_CIRCUMSTANCES.find((item) => item.value === value)?.label;
+          if (labelText) reasons.push(labelText.toLowerCase());
+        }
+        if (reasons.length) { const reason = document.createElement('p'); reason.className = 'popup-reason'; reason.textContent = `Shown because this location has crash records matching ${new Intl.ListFormat('en-US', { style: 'long', type: 'conjunction' }).format(reasons)} in the safety network.`; wrap.append(reason); }
         const severitySection = document.createElement('section');
         severitySection.className = 'popup-section';
         const severityHeading = document.createElement('h4');
@@ -1145,10 +1149,11 @@ function ExplorePanel({ filters, setFilters, visible, setVisible, selection, cle
       <Toggle checked={visible.crashes} onChange={(crashes) => { setVisible((v) => ({ ...v, crashes })); if (!crashes) setFilters((current) => withoutCrashTime(current)); }} label="Crash records" description="Individual crash events symbolized by highest severity" icon={Car} color={BRAND.coral} />
     </section>
     <aside className="mobile-panel-guidance"><CircleAlert size={18} /><span>Your selections update immediately. Open <b>Map</b> to inspect locations or <b>Insights</b> to review the results.</span></aside>
-    <section className="panel-section"><h2>Location</h2><label className="field"><span>Select county or city</span><select value={filters.location} onChange={(event) => patch({ location: event.target.value })}><option value="">MAPA TMA</option><optgroup label="Counties">{LOCATIONS.counties.map((name) => <option key={name} value={`county|${name}`}>{name} County</option>)}</optgroup><optgroup label="Cities">{LOCATIONS.cities.map((name) => <option key={name} value={`city|${name}`}>{name}</option>)}</optgroup></select><ChevronDown size={17} /></label><p className="location-boundary-note">Crash records are filtered spatially by the selected census boundary—not by the crash record city field. Older crashes may appear inside today’s city limits where annexation occurred after the crash.</p></section>
+    <section className="panel-section"><h2>Location</h2><label className="field"><span>Select county or city</span><select value={filters.location} onChange={(event) => patch({ location: event.target.value })}><option value="">MAPA TMA</option><optgroup label="Counties">{LOCATIONS.counties.map((name) => <option key={name} value={`county|${name}`}>{name} County</option>)}</optgroup><optgroup label="Cities">{LOCATIONS.cities.map((name) => <option key={name} value={`city|${name}`}>{name}</option>)}</optgroup></select><ChevronDown size={17} /></label><p className="location-boundary-note">Crash records are filtered spatially by the selected census boundary, not by the crash record city field. Older crashes may appear inside today’s city limits where annexation occurred after the crash.</p></section>
     <section className="panel-section assignment-section"><h2>Network assignment</h2><label className="field"><span>Show network and crashes assigned to</span><select value={filters.assignment} onChange={(event) => patch({ assignment: event.target.value })}><option>All</option><option>Segment</option><option>Junction</option></select><ChevronDown size={17} /></label></section>
     {selection && <section className="focus-card"><button onClick={clearSelection} aria-label="Clear selected network feature"><X size={18} /></button><span>Selected {selection.type}</span><h3>{selection.name}</h3><p>{[selection.city, selection.county].filter(Boolean).join(' · ')}</p><div><b>{formatNumber(selection.crashes)}</b><small>{filters.startYear}–{filters.endYear} crashes</small><b>{formatNumber(selection.kaCrashes)}</b><small>fatal + serious crashes</small></div></section>}
     <section className="panel-section"><div className="crash-records-heading"><h2>Crash records</h2>{crashDataThrough && <small>Data through <b>{crashDataThrough}</b></small>}</div>
+      <p className="data-caveat">Crash records can be revised at any time. This tool shows the information MAPA has received from NDOT and Iowa DOT as of the date above.</p>
       <div className="mode-control">{[['All modes', Car], ['Nonmotorist', Accessibility], ['Pedestrian', Footprints], ['Bicycle', Bike], ['Truck', Truck]].map(([mode, Icon]) => <button type="button" key={mode} className={filters.mode === mode ? 'active' : ''} onClick={() => patch({ mode })}><Icon size={17} />{mode}</button>)}</div>
       <div className="period-row"><label><span>From</span><select value={filters.startYear} onChange={(e) => patch({ startYear: Math.min(Number(e.target.value), filters.endYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label><span>—</span><label><span>Through</span><select value={filters.endYear} onChange={(e) => patch({ endYear: Math.max(Number(e.target.value), filters.startYear) })}>{Array.from({ length: yearMax - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i).map((year) => <option key={year}>{year}</option>)}</select></label></div>
       <a className="kabco-note" href="https://highways.dot.gov/media/20141" target="_blank" rel="noreferrer" aria-label="Open the FHWA KABCO injury classification definitions"><CircleAlert size={17} /><span><strong>MAPA combined KABCO:</strong> Iowa and Nebraska source labels vary by state and reporting period. MAPA harmonizes them as K fatal, A serious injury, B minor injury, C possible injury, and O property damage only. <em>FHWA definitions ↗</em></span></a>
@@ -1558,7 +1563,7 @@ export default function App() {
     : selection ? 1 : 0;
   const hasNotice = mapStatus !== 'ready' || Boolean(analyticsError);
   const crashDataThrough = latestCrashDate ? new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${latestCrashDate}T00:00:00Z`)) : '';
-  const statusMessage = mapStatus === 'loading' ? 'The web map and ArcGIS layers are still loading.' : analyticsError || (mapStatus === 'ready' ? `The map and network analytics are connected to the near-live NDOT and Iowa DOT database.${crashDataThrough ? ` The newest crash record currently available is dated ${crashDataThrough}.` : ''}` : String(mapStatus));
+  const statusMessage = mapStatus === 'loading' ? 'The web map and ArcGIS layers are still loading.' : analyticsError || (mapStatus === 'ready' ? `The map and network analytics are connected to the near live NDOT and Iowa DOT database.${crashDataThrough ? ` The newest crash record currently available is dated ${crashDataThrough}.` : ''}` : String(mapStatus));
   return <main className={`app mobile-${mobilePanel}`}>
     <header className="topbar"><a className="brand-link" href="https://www.mapacog.org" target="_blank" rel="noreferrer" aria-label="Visit the MAPA website"><img src="./mapa-logo.png" alt="Metropolitan Area Planning Agency" /></a><div className="product-name"><span>Safety planning</span><h1>High Injury Network</h1></div><div className="top-actions"><div className="status-wrap" onMouseEnter={() => setStatusHovered(true)} onMouseLeave={() => setStatusHovered(false)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setStatusPinned(false); }}><button className={`status-button ${hasNotice ? 'notice' : ''}`} onClick={() => setStatusPinned((current) => !current)} onFocus={() => setStatusPinned(true)} onKeyDown={(event) => { if (event.key === 'Escape') { setStatusPinned(false); setStatusHovered(false); event.currentTarget.blur(); } }} aria-expanded={showStatus} aria-controls="data-status-popover"><CircleAlert size={16} />{mapStatus === 'loading' ? 'Loading data' : hasNotice ? 'Data notice' : 'Data is current'}</button>{showStatus && <div id="data-status-popover" className="status-popover"><strong>{hasNotice ? 'Data notice' : 'Data is current'}</strong><p>{statusMessage}</p><small>This control reports connection or query issues; it does not change the map.</small></div>}</div><ShareDialog filters={filters} visible={visible} /><button onClick={reset}><RefreshCcw size={17} />Reset filters</button><button className="mobile-menu" onClick={() => setMobilePanel(mobilePanel === 'filters' ? 'map' : 'filters')}><Menu size={22} /></button></div></header>
     <div className={`workspace ${leftCollapsed ? 'left-collapsed' : ''}`}>

@@ -45,9 +45,16 @@ function jsonKeyClause(field, key) {
   return `${field} LIKE '%"${escapeSqlLiteral(key)}"%'`;
 }
 
+function countTextKeyClause(field, key) {
+  return `${field} LIKE '%${escapeSqlLiteral(key)}:%'`;
+}
+
+function environmentKeyClause(crash, key) {
+  return crash ? jsonKeyClause('CBC_envs', key) : countTextKeyClause('CBC_envs_counts', key);
+}
+
 function contributingCircumstanceClauses(values = [], target = 'network') {
   const crash = target === 'crash';
-  const environmentField = crash ? 'CBC_envs' : 'CBC_envs_counts';
   return values.map((value) => {
     switch (value) {
       case 'wetSurface':
@@ -56,6 +63,8 @@ function contributingCircumstanceClauses(values = [], target = 'network') {
         return crash ? "surface_cond IN ('Snow', 'Ice', 'Slush')" : '(surface_snow > 0 OR surface_ice > 0 OR surface_slush > 0)';
       case 'standingWater':
         return crash ? "surface_cond = 'Water'" : 'surface_water > 0';
+      case 'looseSurface':
+        return crash ? "surface_cond = 'Sand/mud/dirt/gravel'" : 'surface_sand > 0';
       case 'precipitation':
         return crash
           ? "(weather_cond_1 IN ('Rain', 'Snow', 'Sleet/hail/freezing rain/drizzle') OR weather_cond_2 IN ('Rain', 'Snow', 'Sleet/hail/freezing rain/drizzle'))"
@@ -66,18 +75,30 @@ function contributingCircumstanceClauses(values = [], target = 'network') {
           : '(weather_fog > 0 OR weather_blowing > 0)';
       case 'severeWinds':
         return crash ? "(weather_cond_1 = 'Severe winds' OR weather_cond_2 = 'Severe winds')" : 'weather_wind > 0';
-      case 'glare': return jsonKeyClause(environmentField, 'Glare');
-      case 'visualObstruction': return jsonKeyClause(environmentField, 'Visual obstruction');
-      case 'animalRoadway': return jsonKeyClause(environmentField, 'Animal in roadway');
-      case 'workZone': return jsonKeyClause(environmentField, 'Work zone');
-      case 'debris': return jsonKeyClause(environmentField, 'Debris');
-      case 'roughRoad': return jsonKeyClause(environmentField, 'Ruts/holes/bumps');
-      case 'shoulderCondition': return jsonKeyClause(environmentField, 'Shoulders (none/low/soft/high)');
-      case 'slipperySurface': return jsonKeyClause(environmentField, 'Slippery/loose/worn surface');
-      case 'jackknife': return crash ? "first_harmful_event = 'Jackknife'" : jsonKeyClause('first_harm_event_counts', 'Jackknife');
+      case 'glare': return environmentKeyClause(crash, 'Glare');
+      case 'visualObstruction': return environmentKeyClause(crash, 'Visual obstruction');
+      case 'roadwayObstruction': return environmentKeyClause(crash, 'Obstruction in roadway');
+      case 'trafficControlIssue': return environmentKeyClause(crash, 'Traffic control issue');
+      case 'animalRoadway': return environmentKeyClause(crash, 'Animal in roadway');
+      case 'workZone': return crash
+        ? `(wz_related = 'Yes' OR ${environmentKeyClause(true, 'Work zone')})`
+        : `(wz_related > 0 OR ${environmentKeyClause(false, 'Work zone')})`;
+      case 'nonHighwayWork': return environmentKeyClause(crash, 'Non-highway work');
+      case 'debris': return environmentKeyClause(crash, 'Debris');
+      case 'roughRoad': return environmentKeyClause(crash, 'Ruts/holes/bumps');
+      case 'shoulderCondition': return environmentKeyClause(crash, 'Shoulders (none/low/soft/high)');
+      case 'slipperySurface': return environmentKeyClause(crash, 'Slippery/loose/worn surface');
+      case 'jackknife': return crash ? "first_harmful_event = 'Jackknife'" : countTextKeyClause('first_harm_event_counts', 'Jackknife');
       default: return null;
     }
   }).filter(Boolean);
+}
+
+export function combineReportedValues(values = [], fallback = 'Not recorded') {
+  const cleaned = values.map((value) => String(value ?? '').trim()).filter(Boolean);
+  const reported = cleaned.filter((value) => value.toLowerCase() !== 'not reported');
+  const source = reported.length ? reported : cleaned.some((value) => value.toLowerCase() === 'not reported') ? ['Not reported'] : [];
+  return [...new Map(source.map((value) => [value.toLowerCase(), value])).values()].join(' / ') || fallback;
 }
 
 function validIsoDate(value) {
