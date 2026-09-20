@@ -111,27 +111,92 @@ function nextIsoDate(value) {
   return date.toISOString().slice(0, 10);
 }
 
-const NE_TRANSITION_WINDOWS = {
-  Sunrise: [
-    [1, '07:30', '07:53'], [2, '07:30', '07:53'],
-    [3, '06:15', '07:30'], [4, '06:15', '07:30'], [5, '06:15', '07:30'],
-    [6, '05:48', '06:15'], [7, '05:48', '06:15'], [8, '05:48', '06:15'],
-    [9, '06:15', '07:53'], [10, '06:15', '07:53'], [11, '06:15', '07:53'],
-    [12, '07:30', '07:53'],
-  ],
-  Sunset: [
-    [1, '16:56', '18:15'], [2, '16:56', '18:15'],
-    [3, '18:20', '20:50'], [4, '18:20', '20:50'], [5, '18:20', '20:50'],
-    [6, '20:50', '21:02'], [7, '20:50', '21:02'], [8, '20:50', '21:02'],
-    [9, '16:56', '20:30'], [10, '16:56', '20:30'], [11, '16:56', '20:30'],
-    [12, '16:56', '18:15'],
-  ],
-};
+const SOLAR_REFERENCE = { latitude: 41.2565, longitude: -95.9345, timeZone: 'America/Chicago' };
+const SOLAR_WINDOW_MINUTES = 180;
+const SOLAR_WINDOW_CACHE = new Map();
+const DAY_MS = 86400000;
+const J1970 = 2440588;
+const J2000 = 2451545;
+const JULIAN_ZERO = 0.0009;
+const RAD = Math.PI / 180;
+const OBLIQUITY = RAD * 23.4397;
 
-function transitionClause(period) {
-  const neWindows = NE_TRANSITION_WINDOWS[period].map(([month, start, end]) => `(EXTRACT(MONTH FROM date) = ${month} AND time >= '${start}' AND time <= '${end}')`).join(' OR ');
-  const iaHalfDay = period === 'Sunrise' ? "time >= '00:00' AND time < '12:00'" : "time >= '12:00' AND time <= '23:59:59'";
-  return `((state = 'IA' AND light_cond = 'Dawn/Dusk' AND ${iaHalfDay}) OR (state = 'NE' AND (${neWindows})))`;
+function toJulian(date) { return date.valueOf() / DAY_MS - 0.5 + J1970; }
+function fromJulian(julian) { return new Date((julian + 0.5 - J1970) * DAY_MS); }
+function solarMeanAnomaly(days) { return RAD * (357.5291 + 0.98560028 * days); }
+function eclipticLongitude(anomaly) {
+  const equation = RAD * (1.9148 * Math.sin(anomaly) + 0.02 * Math.sin(2 * anomaly) + 0.0003 * Math.sin(3 * anomaly));
+  return anomaly + equation + RAD * 102.9372 + Math.PI;
+}
+function solarDeclination(longitude) { return Math.asin(Math.sin(OBLIQUITY) * Math.sin(longitude)); }
+function julianCycle(days, westLongitude) { return Math.round(days - JULIAN_ZERO - westLongitude / (2 * Math.PI)); }
+function approximateTransit(hourAngle, westLongitude, cycle) { return JULIAN_ZERO + (hourAngle + westLongitude) / (2 * Math.PI) + cycle; }
+function solarTransitJulian(transit, anomaly, longitude) { return J2000 + transit + 0.0053 * Math.sin(anomaly) - 0.0069 * Math.sin(2 * longitude); }
+function solarHourAngle(altitude, latitude, declination) {
+  return Math.acos((Math.sin(altitude) - Math.sin(latitude) * Math.sin(declination)) / (Math.cos(latitude) * Math.cos(declination)));
+}
+
+function solarEvent(year, month, day, period) {
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  const days = toJulian(date) - J2000;
+  const westLongitude = -SOLAR_REFERENCE.longitude * RAD;
+  const latitude = SOLAR_REFERENCE.latitude * RAD;
+  const cycle = julianCycle(days, westLongitude);
+  const approximateNoon = approximateTransit(0, westLongitude, cycle);
+  const anomaly = solarMeanAnomaly(approximateNoon);
+  const longitude = eclipticLongitude(anomaly);
+  const declination = solarDeclination(longitude);
+  const noon = solarTransitJulian(approximateNoon, anomaly, longitude);
+  const hourAngle = solarHourAngle(-0.833 * RAD, latitude, declination);
+  const set = solarTransitJulian(approximateTransit(hourAngle, westLongitude, cycle), anomaly, longitude);
+  const rise = noon - (set - noon);
+  return fromJulian(period === 'Sunrise' ? rise : set);
+}
+
+function localClockMinutes(date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SOLAR_REFERENCE.timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value || 0) % 24;
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value || 0);
+  return hour * 60 + minute;
+}
+
+function clockText(minutes) {
+  const bounded = Math.max(0, Math.min(1439, Math.round(minutes)));
+  return `${String(Math.floor(bounded / 60)).padStart(2, '0')}:${String(bounded % 60).padStart(2, '0')}`;
+}
+
+export function solarTransitionWindows(period, startYear, endYear) {
+  const firstYear = Math.max(2000, Number(startYear) || 2000);
+  const lastYear = Math.max(firstYear, Number(endYear) || firstYear);
+  const cacheKey = `${period}:${firstYear}:${lastYear}`;
+  if (SOLAR_WINDOW_CACHE.has(cacheKey)) return SOLAR_WINDOW_CACHE.get(cacheKey);
+  const monthly = Array.from({ length: 12 }, (_, index) => ({ month: index + 1, minimum: Infinity, maximum: -Infinity }));
+  for (let year = firstYear; year <= lastYear; year += 1) {
+    for (let month = 1; month <= 12; month += 1) {
+      const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      // Month endpoints and midpoint capture the seasonal range. Extra March and
+      // November samples capture both sides of the Central Time DST transition.
+      const sampleDays = new Set([1, 15, lastDay]);
+      if (month === 3 || month === 11) for (let day = 7; day <= 14; day += 1) sampleDays.add(Math.min(day, lastDay));
+      for (const day of sampleDays) {
+        const minutes = localClockMinutes(solarEvent(year, month, day, period));
+        monthly[month - 1].minimum = Math.min(monthly[month - 1].minimum, minutes);
+        monthly[month - 1].maximum = Math.max(monthly[month - 1].maximum, minutes);
+      }
+    }
+  }
+  const result = monthly.map(({ month, minimum, maximum }) => [month, clockText(minimum - SOLAR_WINDOW_MINUTES), clockText(maximum + SOLAR_WINDOW_MINUTES)]);
+  SOLAR_WINDOW_CACHE.set(cacheKey, result);
+  return result;
+}
+
+function transitionClause(period, startYear, endYear) {
+  const windows = solarTransitionWindows(period, startYear, endYear)
+    .map(([month, start, end]) => `(EXTRACT(MONTH FROM date) = ${month} AND time >= '${start}' AND time <= '${end}')`)
+    .join(' OR ');
+  return `(light_cond = 'Dawn/Dusk' AND (${windows}))`;
 }
 
 export function buildCrashWhere(filters, selection = null) {
@@ -145,7 +210,7 @@ export function buildCrashWhere(filters, selection = null) {
   if (validIsoDate(filters.crashEndDate)) clauses.push(`date < DATE '${nextIsoDate(filters.crashEndDate)}'`);
   const months = filters.months?.map(Number).filter((month) => month >= 1 && month <= 12) || [];
   if (months.length) clauses.push(`EXTRACT(MONTH FROM date) IN (${months.join(',')})`);
-  if (filters.transition === 'Sunrise' || filters.transition === 'Sunset') clauses.push(transitionClause(filters.transition));
+  if (filters.transition === 'Sunrise' || filters.transition === 'Sunset') clauses.push(transitionClause(filters.transition, filters.startYear, filters.endYear));
   if (filters.assignment && filters.assignment !== 'All') clauses.push(sqlEquals('network_assignment', filters.assignment));
   const travelMode = modeClause(filters.mode);
   if (travelMode) clauses.push(travelMode);

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analysisModeForLayers, buildCrashWhere, buildNetworkWhere, classifyTrend, combineReportedValues, concentrationRatio, escapeSqlLiteral,
-  normalizeNetworkFeature, parseLocation, rateRatio, toCsv,
+  normalizeNetworkFeature, parseLocation, rateRatio, solarTransitionWindows, toCsv,
 } from '../src/utils.js';
 
 test('analytics follow the visible network and do not fall back to HIN in crash-only view', () => {
@@ -87,16 +87,23 @@ test('crash filters combine location, severity, safer people, and the selected s
   assert.match(where, /assigned_segment_id = 'TFL123'/);
 });
 
-test('adds exact dates, months, and recorded sunrise or sunset transitions to crash queries', () => {
+test('adds exact dates, months, and reported solar transition windows to crash queries', () => {
   const where = buildCrashWhere({ ...base, crashStartDate: '2024-03-01', crashEndDate: '2024-05-31', months: [3, 5], transition: 'Sunrise' });
   assert.match(where, /date >= DATE '2024-03-01'/);
   assert.match(where, /date < DATE '2024-06-01'/);
   assert.match(where, /EXTRACT\(MONTH FROM date\) IN \(3,5\)/);
-  assert.match(where, /state = 'IA'.*light_cond = 'Dawn\/Dusk'.*time < '12:00'/);
-  assert.match(where, /state = 'NE'.*EXTRACT\(MONTH FROM date\) = 1.*time >= '07:30'.*time <= '07:53'/);
+  assert.match(where, /light_cond = 'Dawn\/Dusk'/);
+  assert.match(where, /EXTRACT\(MONTH FROM date\) = 1.*time >= '\d{2}:\d{2}'.*time <= '\d{2}:\d{2}'/);
+  assert.doesNotMatch(where, /state = 'IA'|state = 'NE'/);
   const sunset = buildCrashWhere({ ...base, transition: 'Sunset' });
-  assert.match(sunset, /state = 'IA'.*time >= '12:00'.*23:59:59/);
-  assert.match(sunset, /state = 'NE'.*EXTRACT\(MONTH FROM date\) = 6.*time >= '20:50'.*time <= '21:02'/);
+  assert.match(sunset, /light_cond = 'Dawn\/Dusk'.*EXTRACT\(MONTH FROM date\) = 6/);
+  const sunriseWindows = solarTransitionWindows('Sunrise', 2021, 2025);
+  const sunsetWindows = solarTransitionWindows('Sunset', 2021, 2025);
+  assert.equal(sunriseWindows.length, 12);
+  assert.equal(sunsetWindows.length, 12);
+  assert.ok(sunriseWindows.every(([, start, end]) => start < end));
+  assert.ok(sunsetWindows.every(([, start, end]) => start < end));
+  assert.ok(sunriseWindows[5][2] < sunsetWindows[5][1]);
 });
 
 test('uses source-appropriate SQL for distracted and young-driver filters', () => {

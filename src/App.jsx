@@ -1139,7 +1139,7 @@ function CrashTimeControls({ filters, setFilters, dateBounds }) {
     </div>
     <MultiSelect label="Months" values={filters.months} options={MONTHS.map((label, index) => ({ value: index + 1, label }))} onChange={(months) => patch({ months })} emptyLabel="All months" />
     <fieldset className="transition-control"><legend>Transition period</legend><div>{['All times', 'Sunrise', 'Sunset'].map((value) => <button type="button" key={value} className={filters.transition === value ? 'active' : ''} onClick={() => patch({ transition: value })}>{value}</button>)}</div></fieldset>
-    <small className="transition-note">Iowa uses crashes recorded as Dawn/Dusk. Nebraska records time but not a usable lighting category, so it uses Omaha seasonal local-clock windows that account for longitude, date-related solar variation, and daylight saving time. These controls also intersect the From–Through year range.</small>
+    <small className="transition-note">Iowa and Nebraska both report Dawn/Dusk. The sunrise and sunset filters use that classification with the recorded crash date and local time. Solar transition windows are generated for the MAPA region and account for seasonal clock changes, including daylight saving time. These controls also intersect the From and Through years.</small>
   </div>;
 }
 
