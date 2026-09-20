@@ -810,15 +810,15 @@ function popupTemplate(kind, crashLayer, filterRef) {
 
 function configureLayers(layers, filterRef) {
   [layers.safetySegments, layers.safetyIntersections, layers.allSafetySegments, layers.allSafetyIntersections, layers.crashes].forEach((layer) => { layer.popupEnabled = true; });
-  const webmapSafetySegmentRenderer = layers.safetySegments.renderer?.clone?.() || layers.safetySegments.renderer;
-  const webmapSafetyIntersectionRenderer = layers.safetyIntersections.renderer?.clone?.() || layers.safetyIntersections.renderer;
   const webmapSafetySegmentOpacity = layers.safetySegments.opacity;
   const webmapSafetyIntersectionOpacity = layers.safetyIntersections.opacity;
   layers.safetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', color: BRAND.teal, width: 2.4 } };
   layers.safetySegments.opacity = 1;
   layers.safetyIntersections.renderer = { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: BRAND.yellow, size: 6, outline: { color: BRAND.blue, width: 1.1 } } };
-  layers.allSafetySegments.renderer = webmapSafetySegmentRenderer;
-  layers.allSafetyIntersections.renderer = webmapSafetyIntersectionRenderer || { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: [15, 27, 43, 255], size: 3, outline: { color: [143, 168, 184, 128], width: .9 } } };
+  // Match the AGOL appearance with lightweight web symbols. The published CIM
+  // symbols are visually simple but expensive when repeated across the full network.
+  layers.allSafetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', style: 'solid', color: [0, 92, 230, 255], width: 1.5, cap: 'round', join: 'round' } };
+  layers.allSafetyIntersections.renderer = { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: [15, 27, 43, 255], size: 4, outline: { color: [143, 168, 184, 128], width: 1 } } };
   layers.allSafetySegments.opacity = webmapSafetySegmentOpacity;
   layers.allSafetyIntersections.opacity = webmapSafetyIntersectionOpacity;
   const severityRenderer = {
