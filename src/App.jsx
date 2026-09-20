@@ -810,13 +810,17 @@ function popupTemplate(kind, crashLayer, filterRef) {
 
 function configureLayers(layers, filterRef) {
   [layers.safetySegments, layers.safetyIntersections, layers.allSafetySegments, layers.allSafetyIntersections, layers.crashes].forEach((layer) => { layer.popupEnabled = true; });
+  const webmapSafetySegmentRenderer = layers.safetySegments.renderer?.clone?.() || layers.safetySegments.renderer;
   const webmapSafetyIntersectionRenderer = layers.safetyIntersections.renderer?.clone?.() || layers.safetyIntersections.renderer;
+  const webmapSafetySegmentOpacity = layers.safetySegments.opacity;
+  const webmapSafetyIntersectionOpacity = layers.safetyIntersections.opacity;
   layers.safetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', color: BRAND.teal, width: 2.4 } };
   layers.safetySegments.opacity = 1;
   layers.safetyIntersections.renderer = { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: BRAND.yellow, size: 6, outline: { color: BRAND.blue, width: 1.1 } } };
-  layers.allSafetySegments.renderer = { type: 'simple', symbol: { type: 'simple-line', style: 'solid', color: BRAND.blue, width: 1, cap: 'round', join: 'round' } };
+  layers.allSafetySegments.renderer = webmapSafetySegmentRenderer;
   layers.allSafetyIntersections.renderer = webmapSafetyIntersectionRenderer || { type: 'simple', symbol: { type: 'simple-marker', style: 'circle', color: [15, 27, 43, 255], size: 3, outline: { color: [143, 168, 184, 128], width: .9 } } };
-  layers.allSafetyIntersections.opacity = 1;
+  layers.allSafetySegments.opacity = webmapSafetySegmentOpacity;
+  layers.allSafetyIntersections.opacity = webmapSafetyIntersectionOpacity;
   const severityRenderer = {
     type: 'unique-value', field: 'severity', orderByClassesEnabled: true,
     defaultSymbol: { type: 'simple-marker', color: BRAND.grey, size: 5, outline: { color: 'white', width: .5 } },
