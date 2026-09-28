@@ -39,15 +39,31 @@ function geometryToGeoJSON(geometry) {
 }
 
 export function featuresToGeoJSON(graphics, kind) {
+  const collectionName = kind === 'segment' ? 'hin_roads' : kind === 'intersection' ? 'hin_intersections' : 'filtered_crashes';
   return {
     type: 'FeatureCollection',
-    name: kind === 'segment' ? 'hin_roads' : 'hin_intersections',
+    name: collectionName,
     features: graphics.map(({ graphic, ...properties }) => ({
       type: 'Feature',
       geometry: geometryToGeoJSON(graphic.geometry),
       properties: Object.fromEntries(Object.entries(properties).filter(([, value]) => value == null || ['string', 'number', 'boolean'].includes(typeof value))),
     })).filter((feature) => feature.geometry),
   };
+}
+
+function crashColumns(fields = [], records = []) {
+  const known = new Set(fields.map((field) => field.name));
+  const extras = records.flatMap((record) => Object.keys(record)).filter((field) => field !== 'graphic' && !known.has(field));
+  return [
+    ...fields.map((field) => ({ field: field.name, label: field.alias || field.name, type: field.type })),
+    ...[...new Set(extras)].map((field) => ({ field, label: field, type: typeof records.find((record) => record[field] != null)?.[field] })),
+  ];
+}
+
+function geoPackageType(column) {
+  if (['oid', 'integer', 'small-integer'].includes(column.type)) return 'INTEGER';
+  if (['double', 'single', 'number'].includes(column.type)) return 'DOUBLE';
+  return 'TEXT';
 }
 
 export async function exportNetwork(format, records, kind) {
@@ -77,6 +93,35 @@ export async function exportNetwork(format, records, kind) {
     const propertyTypes = NETWORK_COLUMNS.map(({ field }) => ({ name: field === 'id' ? 'network_id' : field, dataType: ['crashes', 'kaCrashes', 'fatalities', 'serious', 'miles', 'functionalClass', 'hin'].includes(field) ? 'DOUBLE' : 'TEXT' }));
     geoPackage.createFeatureTableFromProperties(collection.name, propertyTypes);
     await geoPackage.addGeoJSONFeaturesToGeoPackage(gpkgFeatures, collection.name, false, 250);
+    const bytes = await geoPackage.export();
+    downloadBlob(new Blob([bytes], { type: 'application/geopackage+sqlite3' }), `${stem}.gpkg`);
+  }
+}
+
+export async function exportCrashRecords(format, records, fields = []) {
+  const stem = 'MAPA_Filtered_Crashes';
+  const columns = crashColumns(fields, records);
+  if (format === 'csv') {
+    downloadBlob(new Blob([toCsv(records, columns)], { type: 'text/csv;charset=utf-8' }), `${stem}.csv`);
+    return;
+  }
+  const collection = featuresToGeoJSON(records, 'crash');
+  if (format === 'shp') {
+    const shpwrite = await import('@mapbox/shp-write');
+    const blob = await shpwrite.zip(collection, { outputType: 'blob', compression: 'DEFLATE', types: { point: 'filtered_crashes' } });
+    downloadBlob(blob, `${stem}_Shapefile.zip`);
+    return;
+  }
+  if (format === 'gpkg') {
+    const [{ GeoPackageAPI, setSqljsWasmLocateFile }, { default: sqlWasmUrl }] = await Promise.all([
+      import('@ngageoint/geopackage'),
+      import('@ngageoint/geopackage/dist/sql-wasm.wasm?url'),
+    ]);
+    setSqljsWasmLocateFile(() => sqlWasmUrl);
+    const geoPackage = await GeoPackageAPI.create();
+    const propertyTypes = columns.map((column) => ({ name: column.field, dataType: geoPackageType(column) }));
+    geoPackage.createFeatureTableFromProperties(collection.name, propertyTypes);
+    await geoPackage.addGeoJSONFeaturesToGeoPackage(collection.features, collection.name, false, 250);
     const bytes = await geoPackage.export();
     downloadBlob(new Blob([bytes], { type: 'application/geopackage+sqlite3' }), `${stem}.gpkg`);
   }
