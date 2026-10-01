@@ -348,6 +348,8 @@ button { color: inherit; }
 .table-wrap td strong { max-width: 290px; overflow: hidden; color: var(--dark); text-overflow: ellipsis; white-space: nowrap; }
 .table-wrap td small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .table-wrap td button { padding: 5px 10px; color: var(--blue); border: 1px solid #b9c9c7; background: white; font-weight: 700; cursor: pointer; }
+.table-wrap .map-focus-row { cursor: zoom-in; }
+.table-wrap .map-focus-row:hover, .table-wrap .map-focus-row:focus-visible { background: #edf7f5; outline: 2px solid var(--mint); outline-offset: -2px; }
 .table-state { display: grid; place-items: center; color: var(--muted); font-size: 14px; }
 .row-limit { margin: 0; padding: 10px 15px; color: var(--muted); background: #fff8e8; font-size: 12px; }
 .mobile-nav { display: none; }

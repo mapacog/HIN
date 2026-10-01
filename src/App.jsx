@@ -45,6 +45,25 @@ function isoDate(value) {
   return date && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : '';
 }
 
+function selectionContainsPoint(geometry, mapPoint, screenPoint, view) {
+  if (geometry.type === 'point') {
+    const selectedScreenPoint = view.toScreen(geometry);
+    return Boolean(selectedScreenPoint && Math.hypot(selectedScreenPoint.x - screenPoint.x, selectedScreenPoint.y - screenPoint.y) <= 12);
+  }
+  if (!mapPoint || (geometry.extent && !geometry.extent.contains(mapPoint))) return false;
+  if (geometry.type !== 'polygon') return false;
+  let inside = false;
+  for (const ring of geometry.rings || []) {
+    for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
+      const [x1, y1] = ring[index];
+      const [x2, y2] = ring[previous];
+      if ((y1 > mapPoint.y) !== (y2 > mapPoint.y)
+        && mapPoint.x < ((x2 - x1) * (mapPoint.y - y1)) / (y2 - y1) + x1) inside = !inside;
+    }
+  }
+  return inside;
+}
+
 function epochDay(value) {
   return Math.floor(Date.parse(`${value}T00:00:00Z`) / 86400000);
 }
@@ -952,6 +971,9 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
     let currentSelectedGraphic = null;
     let selectionPopupWasVisible = false;
     let selectionHighlights = [];
+    let selectedGeometries = [];
+    let selectionRevision = 0;
+    let selectionPending = false;
     let networkFilterRevision = 0;
     const selectedObjectIds = { segment: new Set(), intersection: new Set(), crash: new Set() };
     let view;
@@ -977,6 +999,8 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
       const missing = Object.entries(layers).filter(([, layer]) => !layer).map(([name]) => name);
       if (missing.length) throw new Error(`Missing map layers: ${missing.join(', ')}`);
       const prepareOperationalLayer = (layer) => {
+        // Let the published vector tile layer keep its AGOL visibility, scale range, and style.
+        if (layer.title?.trim() === 'Human Geography Label') return;
         layer.popupEnabled = false;
         if (layer === layers.tmaBoundary) {
           layer.visible = true;
@@ -1014,8 +1038,12 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
         polygonSymbol: { type: 'simple-fill', color: [0, 132, 175, .08], outline: { color: BRAND.blue, width: 2, style: 'dash' } },
       });
       const clearSpatialSelection = () => {
+        selectionRevision += 1;
+        selectionPending = false;
         pointPicking = false;
+        sketchViewModel?.cancel();
         selectedObjectIds.segment.clear(); selectedObjectIds.intersection.clear(); selectedObjectIds.crash.clear();
+        selectedGeometries = [];
         selectionHighlights.forEach((item) => item.remove()); selectionHighlights = [];
         selectionLayer.removeAll();
         layers.crashes.featureEffect = null;
@@ -1032,43 +1060,56 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
         if (notify) callbacks.current.onSelect(null);
       };
       const applySpatialSelection = async (geometry) => {
-        const activeNetwork = visibleRef.current.safety
-          ? [[layers.allSafetySegments, 'segment'], [layers.allSafetyIntersections, 'intersection']]
-          : visibleRef.current.hin
-            ? [[layers.safetySegments, 'segment'], [layers.safetyIntersections, 'intersection']]
-            : [];
-        const active = [...activeNetwork];
-        if (visibleRef.current.crashes) active.push([layers.crashes, 'crash']);
-        for (const [layer, kind] of active) {
-          const ids = await layer.queryObjectIds({
-            geometry, spatialRelationship: 'intersects', where: layer.definitionExpression || '1=1',
-            distance: geometry.type === 'point' ? Math.max(25, view.resolution * 10) : undefined, units: geometry.type === 'point' ? 'meters' : undefined,
-          });
-          ids.forEach((id) => selectedObjectIds[kind].add(Number(id)));
-        }
-        selectionHighlights.forEach((item) => item.remove()); selectionHighlights = [];
-        for (const [layer, kind] of active) {
-          const ids = [...selectedObjectIds[kind]];
-          if (ids.length) selectionHighlights.push((await view.whenLayerView(layer)).highlight(ids));
-        }
-        const crashIds = [...selectedObjectIds.crash];
-        layers.crashes.featureEffect = visibleRef.current.crashes && crashIds.length ? new FeatureEffect({
-          filter: new FeatureFilter({ objectIds: crashIds }),
-          includedEffect: 'brightness(120%) saturate(135%)',
-          excludedEffect: 'blur(1px) grayscale(70%) opacity(18%)',
-        }) : null;
-        const result = { segment: [...selectedObjectIds.segment], intersection: [...selectedObjectIds.intersection], crash: crashIds, crashActive: visibleRef.current.crashes };
-        callbacks.current.onSpatialSelect(result);
-        const count = selectionToolbar?.querySelector('.selection-count');
-        if (count) {
-          const parts = [];
-          if (activeNetwork.length) parts.push(`${result.segment.length.toLocaleString()} roads`, `${result.intersection.length.toLocaleString()} intersections`);
-          if (visibleRef.current.crashes) parts.push(`${result.crash.length.toLocaleString()} crashes`);
-          count.textContent = parts.join(' · ') || 'No active selection';
-        }
+        const revision = selectionRevision;
+        selectionPending = true;
+        try {
+          const activeNetwork = visibleRef.current.safety
+            ? [[layers.allSafetySegments, 'segment'], [layers.allSafetyIntersections, 'intersection']]
+            : visibleRef.current.hin
+              ? [[layers.safetySegments, 'segment'], [layers.safetyIntersections, 'intersection']]
+              : [];
+          const active = [...activeNetwork];
+          if (visibleRef.current.crashes) active.push([layers.crashes, 'crash']);
+          const matches = await Promise.all(active.map(async ([layer, kind]) => {
+            const ids = await layer.queryObjectIds({
+              geometry, spatialRelationship: 'intersects', where: layer.definitionExpression || '1=1',
+              distance: geometry.type === 'point' ? Math.max(25, view.resolution * 10) : undefined, units: geometry.type === 'point' ? 'meters' : undefined,
+            });
+            return [kind, ids];
+          }));
+          if (revision !== selectionRevision) return;
+          for (const [kind, ids] of matches) ids.forEach((id) => selectedObjectIds[kind].add(Number(id)));
+          selectedGeometries.push(geometry);
+          selectionHighlights.forEach((item) => item.remove()); selectionHighlights = [];
+          for (const [layer, kind] of active) {
+            const ids = [...selectedObjectIds[kind]];
+            if (!ids.length) continue;
+            const layerView = await view.whenLayerView(layer);
+            if (revision !== selectionRevision) return;
+            selectionHighlights.push(layerView.highlight(ids));
+          }
+          const crashIds = [...selectedObjectIds.crash];
+          layers.crashes.featureEffect = visibleRef.current.crashes && crashIds.length ? new FeatureEffect({
+            filter: new FeatureFilter({ objectIds: crashIds }),
+            includedEffect: 'brightness(120%) saturate(135%)',
+            excludedEffect: 'blur(1px) grayscale(70%) opacity(18%)',
+          }) : null;
+          const result = { segment: [...selectedObjectIds.segment], intersection: [...selectedObjectIds.intersection], crash: crashIds, crashActive: visibleRef.current.crashes };
+          callbacks.current.onSpatialSelect(result);
+          const count = selectionToolbar?.querySelector('.selection-count');
+          if (count) {
+            const parts = [];
+            if (activeNetwork.length) parts.push(`${result.segment.length.toLocaleString()} roads`, `${result.intersection.length.toLocaleString()} intersections`);
+            if (visibleRef.current.crashes) parts.push(`${result.crash.length.toLocaleString()} crashes`);
+            count.textContent = parts.join(' · ') || 'No active selection';
+          }
+        } finally { if (revision === selectionRevision) selectionPending = false; }
       };
       sketchHandle = sketchViewModel.on('create', (event) => {
-        if (event.state === 'complete') applySpatialSelection(event.graphic.geometry).catch((error) => callbacks.current.onStatus(error.message || 'Map selection could not be completed.'));
+        if (event.state === 'complete') {
+          selectionLayer.remove(event.graphic);
+          applySpatialSelection(event.graphic.geometry).catch((error) => callbacks.current.onStatus(error.message || 'Map selection could not be completed.'));
+        }
       });
       pointPointerHandler = (event) => {
         if (!pointPicking || event.target.closest?.('.selection-tools')) return;
@@ -1076,7 +1117,6 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
         const bounds = view.container.getBoundingClientRect();
         const mapPoint = view.toMap({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
         if (!mapPoint) return;
-        selectionLayer.add(new Graphic({ geometry: mapPoint, symbol: { type: 'simple-marker', style: 'circle', color: BRAND.yellow, size: 8, outline: { color: BRAND.blue, width: 1.5 } } }));
         applySpatialSelection(mapPoint).catch((error) => callbacks.current.onStatus(error.message || 'Map selection could not be completed.'));
       };
       view.container.addEventListener('pointerdown', pointPointerHandler, true);
@@ -1101,6 +1141,10 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
       });
       view.ui.add(new Expand({ view, content: selectionToolbar, expanded: false, expandTooltip: 'Select map features', collapseTooltip: 'Close selection tools' }), { position: 'top-left', index: 0 });
       clickHandle = view.on('click', async (event) => {
+        if (selectedGeometries.length && !selectionPending && !pointPicking && sketchViewModel.state !== 'active') {
+          const insideSelection = selectedGeometries.some((geometry) => selectionContainsPoint(geometry, event.mapPoint, event, view));
+          if (!insideSelection) clearSpatialSelection();
+        }
         const hit = await view.hitTest(event, { include: [layers.safetySegments, layers.safetyIntersections, layers.allSafetySegments, layers.allSafetyIntersections] });
         const result = hit.results.find((item) => item.type === 'graphic');
         if (!result) {
@@ -1163,8 +1207,7 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
         },
         resetNetworkIdFilters: () => applyNetworkFilters(networkFilterEntries()),
         zoomSelection: async () => {
-          const selectionGraphics = selectionLayer.graphics.toArray();
-          const selectedGraphic = currentSelectedGraphic || (selectionGraphics.length === 1 ? selectionGraphics[0] : null);
+          const selectedGraphic = currentSelectedGraphic;
           if (selectedGraphic) {
             const geometry = selectedGraphic.geometry;
             const target = geometry?.type === 'point'
@@ -1173,9 +1216,11 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
             await view.goTo(target, { duration: 650 }).catch(() => {});
             return;
           }
-          if (selectionGraphics.length) {
-            const extent = selectionGraphics.reduce((combined, graphic) => {
-              const graphicExtent = graphic.geometry?.extent;
+          if (selectedGeometries.length === 1 && selectedGeometries[0].type === 'point') {
+            await view.goTo({ target: selectedGeometries[0], zoom: 16 }, { duration: 650 }).catch(() => {});
+          } else if (selectedGeometries.length) {
+            const extent = selectedGeometries.reduce((combined, geometry) => {
+              const graphicExtent = geometry.extent;
               return graphicExtent ? (combined ? combined.union(graphicExtent) : graphicExtent.clone()) : combined;
             }, null);
             if (extent) await view.goTo(extent.expand(1.25), { duration: 650 }).catch(() => {});
@@ -1185,6 +1230,15 @@ function MapCanvas({ filters, selection, visible, onReady, onSelect, onSpatialSe
           applyNetworkFilters(networkFilterEntries({ hinSegment, hinIntersection, safetySegment, safetyIntersection }));
         },
         focus: async (record) => { highlight?.remove(); const safety = record.networkMode === 'safety' || Number(record.hin) !== 1; const layer = record.type === 'segment' ? (safety ? layers.allSafetySegments : layers.safetySegments) : (safety ? layers.allSafetyIntersections : layers.safetyIntersections); const result = await layer.queryFeatures({ objectIds: [record.objectId], outFields: ['*'], returnGeometry: true }); if (!result.features.length) return; currentSelectedGraphic = result.features[0]; highlight = (await view.whenLayerView(layer)).highlight(currentSelectedGraphic); await view.goTo(currentSelectedGraphic, { duration: 600 }).catch(() => {}); view.openPopup({ features: result.features, location: currentSelectedGraphic.geometry.extent?.center || currentSelectedGraphic.geometry }); selectionPopupWasVisible = true; },
+        focusCrash: async (record) => {
+          const objectId = Number(record.OBJECTID);
+          if (!Number.isFinite(objectId)) return;
+          const result = await layers.crashes.queryFeatures({ objectIds: [objectId], outFields: ['*'], returnGeometry: true });
+          const graphic = result.features[0];
+          if (!graphic?.geometry) return;
+          await view.goTo({ target: graphic.geometry, zoom: 16 }, { duration: 600 }).catch(() => {});
+          view.openPopup({ features: [graphic], location: graphic.geometry });
+        },
         zoomLocation: async (value) => {
           const location = parseLocation(value);
           counties.visible = location?.type === 'county'; cities.visible = location?.type === 'city';
@@ -1387,7 +1441,7 @@ function crashTableDate(value) {
     : fieldText(value);
 }
 
-function DataDrawer({ open, setOpen, tab, setTab, rows, crashRows, crashCount, crashLoading, crashError, loading, onFocus, onExport, period, networkLabel }) {
+function DataDrawer({ open, setOpen, tab, setTab, rows, crashRows, crashCount, crashLoading, crashError, loading, onFocus, onFocusCrash, onExport, period, networkLabel }) {
   const [search, setSearch] = useState('');
   const [exporting, setExporting] = useState('');
   const [exportStatus, setExportStatus] = useState('');
@@ -1414,6 +1468,11 @@ function DataDrawer({ open, setOpen, tab, setTab, rows, crashRows, crashCount, c
     }
   };
   const tableLoading = crashTab ? crashLoading : loading;
+  const openRowOnMap = (row) => {
+    setOpen(false);
+    if (crashTab) onFocusCrash(row);
+    else onFocus(row);
+  };
   return <section className={`data-drawer ${open ? 'open' : ''}`}>
     <button className="drawer-handle" onClick={() => setOpen(!open)} aria-expanded={open}><span /><Table2 size={18} /><b>{crashTab ? 'Crash records' : 'Network table'}</b><small>{crashTab ? `${formatNumber(crashCount)} matching crashes` : `${networkLabel} · ${formatNumber(rows.length)} filtered ${tab === 'segment' ? 'roads' : 'intersections'}`} · {period}</small><ChevronDown size={19} /></button>
     {open && <div className="drawer-body">
@@ -1424,9 +1483,9 @@ function DataDrawer({ open, setOpen, tab, setTab, rows, crashRows, crashCount, c
         {(exportStatus || (crashTab && crashError)) && <small className="export-status" role="status">{exportStatus || crashError}</small>}
       </div>
       {tableLoading ? <div className="table-state">Updating the filtered {crashTab ? 'crashes' : 'network'}…</div> : crashTab ? <div className="table-wrap">
-        <table><thead><tr><th>#</th><th>Crash</th><th>Date and time</th><th>Severity</th><th>Location</th><th>Assignment</th><th>Killed</th><th>Seriously injured</th><th>Nonmotorists</th><th>Vehicles</th><th>Collision</th></tr></thead><tbody>{visibleRows.map((row, index) => <tr key={`crash-${row.OBJECTID ?? row.crash_id ?? index}`}><td>{index + 1}</td><td><strong>{fieldText(row.crash_id, 'ID not recorded')}</strong><small>Object ID {fieldText(row.OBJECTID, '—')}</small></td><td>{crashTableDate(row.date)}<small>{fieldText(row.time)}</small></td><td>{SEVERITIES.find((item) => item.value === row.severity)?.label || fieldText(row.severity)}</td><td>{fieldText(row.city_name)}<small>{fieldText(row.county)}</small></td><td>{fieldText(row.network_assignment)}<small>{row.network_assignment === 'Segment' ? fieldText(row.assigned_segment_id) : fieldText(row.assigned_junction_id)}</small></td><td>{formatNumber(numeric(row, 'num_K_occ') + numeric(row, 'num_K_nonm'))}</td><td>{formatNumber(numeric(row, 'num_A_occ') + numeric(row, 'num_A_nonm'))}</td><td>{formatNumber(numeric(row, 'nonmotorist_counted'))}</td><td>{formatNumber(numeric(row, 'num_veh'))}</td><td>{fieldText(row.manner_of_collision)}</td></tr>)}</tbody></table>
+        <table><thead><tr><th>#</th><th>Crash</th><th>Date and time</th><th>Severity</th><th>Location</th><th>Assignment</th><th>Killed</th><th>Seriously injured</th><th>Nonmotorists</th><th>Vehicles</th><th>Collision</th></tr></thead><tbody>{visibleRows.map((row, index) => <tr key={`crash-${row.OBJECTID ?? row.crash_id ?? index}`} className="map-focus-row" title="Double-click to zoom to this crash" tabIndex={0} onDoubleClick={() => openRowOnMap(row)} onKeyDown={(event) => { if (event.key === 'Enter') openRowOnMap(row); }}><td>{index + 1}</td><td><strong>{fieldText(row.crash_id, 'ID not recorded')}</strong><small>Object ID {fieldText(row.OBJECTID, '—')}</small></td><td>{crashTableDate(row.date)}<small>{fieldText(row.time)}</small></td><td>{SEVERITIES.find((item) => item.value === row.severity)?.label || fieldText(row.severity)}</td><td>{fieldText(row.city_name)}<small>{fieldText(row.county)}</small></td><td>{fieldText(row.network_assignment)}<small>{row.network_assignment === 'Segment' ? fieldText(row.assigned_segment_id) : fieldText(row.assigned_junction_id)}</small></td><td>{formatNumber(numeric(row, 'num_K_occ') + numeric(row, 'num_K_nonm'))}</td><td>{formatNumber(numeric(row, 'num_A_occ') + numeric(row, 'num_A_nonm'))}</td><td>{formatNumber(numeric(row, 'nonmotorist_counted'))}</td><td>{formatNumber(numeric(row, 'num_veh'))}</td><td>{fieldText(row.manner_of_collision)}</td></tr>)}</tbody></table>
         {crashCount > crashRows.length && <p className="row-limit">Showing the first {formatNumber(crashRows.length)} matching crashes. The export includes all {formatNumber(crashCount)} records and all available crash fields.</p>}
-      </div> : <div className="table-wrap"><table><thead><tr><th>#</th><th>{tab === 'segment' ? 'Road' : 'Intersection'}</th><th>Location</th><th>HIN</th><th>K+A crashes</th><th>All crashes</th><th>Killed</th><th>Seriously injured</th><th>Nonmotorists</th><th>Bicyclists</th><th>Vehicles</th><th>Speeding</th><th>Distracted</th><th>Impaired / alcohol</th><th>{tab === 'segment' ? 'Miles / class' : 'Control / legs'}</th><th /></tr></thead><tbody>{visibleRows.map((row, index) => <tr key={`${row.type}-${row.objectId}`}><td>{index + 1}</td><td><strong>{row.name}</strong><small>{row.id}</small></td><td>{row.city || '—'}<small>{row.county || '—'}</small></td><td>{row.hin === 1 ? 'Yes' : 'No'}</td><td>{formatNumber(row.kaCrashes)}</td><td>{formatNumber(row.crashes)}</td><td>{formatNumber(row.fatalities)}</td><td>{formatNumber(row.serious)}</td><td>{formatNumber(row.nonmotorists)}</td><td>{formatNumber(row.bicycles)}</td><td>{formatNumber(row.vehicles)}</td><td>{formatNumber(row.speeding)}</td><td>{formatNumber(row.distracted)}</td><td>{formatNumber(row.impaired)}</td><td>{tab === 'segment' ? <>{formatNumber(row.miles, 2)} mi<small>{functionalClassLabel(row.functionalClass)}</small></> : <>{row.control || '—'}<small>{row.lanes ? `${row.lanes} legs` : 'Legs not recorded'}</small></>}</td><td><button onClick={() => onFocus(row)}>Show</button></td></tr>)}</tbody></table>{rows.length > 1000 && <p className="row-limit">Showing the first 1,000 rows. Exports include up to 2,000 filtered features.</p>}</div>}
+      </div> : <div className="table-wrap"><table><thead><tr><th>#</th><th>{tab === 'segment' ? 'Road' : 'Intersection'}</th><th>Location</th><th>HIN</th><th>K+A crashes</th><th>All crashes</th><th>Killed</th><th>Seriously injured</th><th>Nonmotorists</th><th>Bicyclists</th><th>Vehicles</th><th>Speeding</th><th>Distracted</th><th>Impaired / alcohol</th><th>{tab === 'segment' ? 'Miles / class' : 'Control / legs'}</th><th /></tr></thead><tbody>{visibleRows.map((row, index) => <tr key={`${row.type}-${row.objectId}`} className="map-focus-row" title="Double-click to zoom to this location" tabIndex={0} onDoubleClick={(event) => { if (!event.target.closest('button')) openRowOnMap(row); }} onKeyDown={(event) => { if (event.key === 'Enter' && event.target === event.currentTarget) openRowOnMap(row); }}><td>{index + 1}</td><td><strong>{row.name}</strong><small>{row.id}</small></td><td>{row.city || '—'}<small>{row.county || '—'}</small></td><td>{row.hin === 1 ? 'Yes' : 'No'}</td><td>{formatNumber(row.kaCrashes)}</td><td>{formatNumber(row.crashes)}</td><td>{formatNumber(row.fatalities)}</td><td>{formatNumber(row.serious)}</td><td>{formatNumber(row.nonmotorists)}</td><td>{formatNumber(row.bicycles)}</td><td>{formatNumber(row.vehicles)}</td><td>{formatNumber(row.speeding)}</td><td>{formatNumber(row.distracted)}</td><td>{formatNumber(row.impaired)}</td><td>{tab === 'segment' ? <>{formatNumber(row.miles, 2)} mi<small>{functionalClassLabel(row.functionalClass)}</small></> : <>{row.control || '—'}<small>{row.lanes ? `${row.lanes} legs` : 'Legs not recorded'}</small></>}</td><td><button onClick={() => onFocus(row)}>Show</button></td></tr>)}</tbody></table>{rows.length > 1000 && <p className="row-limit">Showing the first 1,000 rows. Exports include up to 2,000 filtered features.</p>}</div>}
     </div>}
   </section>;
 }
@@ -1758,7 +1817,7 @@ export default function App() {
     <header className="topbar"><a className="brand-link" href="https://www.mapacog.org" target="_blank" rel="noreferrer" aria-label="Visit the MAPA website"><img src="./mapa-logo.png" alt="Metropolitan Area Planning Agency" /></a><div className="product-name"><span>Safety planning</span><h1>High Injury Network</h1></div><div className="top-actions"><div className="status-wrap" onMouseEnter={() => setStatusHovered(true)} onMouseLeave={() => setStatusHovered(false)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setStatusPinned(false); }}><button className={`status-button ${hasNotice ? 'notice' : ''}`} onClick={() => setStatusPinned((current) => !current)} onFocus={() => setStatusPinned(true)} onKeyDown={(event) => { if (event.key === 'Escape') { setStatusPinned(false); setStatusHovered(false); event.currentTarget.blur(); } }} aria-expanded={showStatus} aria-controls="data-status-popover"><CircleAlert size={16} />{mapStatus === 'loading' ? 'Loading data' : hasNotice ? 'Data notice' : 'Data is current'}</button>{showStatus && <div id="data-status-popover" className="status-popover"><strong>{hasNotice ? 'Data notice' : 'Data is current'}</strong><p>{statusMessage}</p><small>This control reports connection or query issues; it does not change the map.</small></div>}</div><ShareDialog filters={filters} visible={visible} /><button onClick={reset}><RefreshCcw size={17} />Reset filters</button><button className="mobile-menu" onClick={() => setMobilePanel(mobilePanel === 'filters' ? 'map' : 'filters')}><Menu size={22} /></button></div></header>
     <div className={`workspace ${leftCollapsed ? 'left-collapsed' : ''}`}>
       <aside className="left-panel"><nav><button className={leftTab === 'explore' ? 'active' : ''} onClick={() => setLeftTab('explore')}><Layers3 size={18} />Explore</button><button className={leftTab === 'filters' ? 'active' : ''} onClick={() => setLeftTab('filters')}><Filter size={18} />Filters</button></nav><div className="panel-scroll">{leftTab === 'explore' ? <ExplorePanel filters={filters} setFilters={setFilters} visible={visible} setVisible={setVisible} selection={selection} clearSelection={clearSelection} yearMax={yearMax} dateBounds={dateBounds} crashDataThrough={crashDataThrough} /> : <FiltersPanel filters={filters} setFilters={setFilters} />}</div></aside>
-      <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { if (!record) { setSelection(null); return; } const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><SelectionSummary count={selectedFeatureCount} onZoom={() => mapApi?.zoomSelection()} /><div className="map-key">{visible.hin && <><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span></>}{visible.safety && <span><i className="safety" />Safety network</span>}{visible.crashes && <span><i className="crash" />Crash severity</span>}</div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} crashRows={crashExportState.rows} crashCount={crashExportState.objectIds.length} crashLoading={crashExportState.loading} crashError={crashExportState.error} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={analysisMode === 'safety' ? 'All Safety Network' : analysisMode === 'crashes' ? 'No network layer selected' : 'High Injury Network'} /></section>
+      <section className="map-panel"><button className="left-collapse" onClick={() => setLeftCollapsed((current) => !current)} aria-label={leftCollapsed ? 'Expand explore panel' : 'Collapse explore panel'}>{leftCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}</button><MapCanvas filters={filters} selection={selection} visible={visible} onReady={setMapApi} onSelect={(record) => { if (!record) { setSelection(null); return; } const current = networkRows[record.type]?.find((row) => String(row.id) === String(record.id)); setSelection(current || { ...record, crashes: 0, kaCrashes: 0 }); }} onSpatialSelect={setSpatialSelection} onStatus={setMapStatus} /><SelectionSummary count={selectedFeatureCount} onZoom={() => mapApi?.zoomSelection()} /><div className="map-key">{visible.hin && <><span><i className="line" />HIN roadway</span><span><i className="intersection" />HIN intersection</span></>}{visible.safety && <span><i className="safety" />Safety network</span>}{visible.crashes && <span><i className="crash" />Crash severity</span>}</div><DataDrawer open={drawerOpen} setOpen={setDrawerOpen} tab={drawerTab} setTab={setDrawerTab} rows={drawerRows} crashRows={crashExportState.rows} crashCount={crashExportState.objectIds.length} crashLoading={crashExportState.loading} crashError={crashExportState.error} loading={analyticsLoading} onFocus={(row) => { mapApi?.focus(row); setSelection(row); }} onFocusCrash={(row) => mapApi?.focusCrash(row)} onExport={exportRows} period={`${filters.startYear}–${filters.endYear}`} networkLabel={analysisMode === 'safety' ? 'All Safety Network' : analysisMode === 'crashes' ? 'No network layer selected' : 'High Injury Network'} /></section>
       <aside className="insights-panel"><div className="insights-scroll"><PerformancePanel performance={performance} loading={analyticsLoading} impacts={impacts} onFocusImpact={focusImpact} period={`${filters.startYear}–${filters.endYear}`} networkMode={analysisMode} assignment={filters.assignment} selectionCount={spatialSelection ? spatialSelection.segment.length + spatialSelection.intersection.length : 0} crashTimeActive={hasCrashTimeFilter(filters)} mode={filters.mode} /></div></aside>
     </div>
     <nav className="mobile-nav"><button className={mobilePanel === 'map' ? 'active' : ''} onClick={() => setMobilePanel('map')}><MapIcon size={21} />Map</button><button className={mobilePanel === 'filters' ? 'active' : ''} onClick={() => setMobilePanel('filters')}><SlidersHorizontal size={21} />Explore</button><button className={mobilePanel === 'insights' ? 'active' : ''} onClick={() => setMobilePanel('insights')}><BarChart3 size={21} />Insights</button><button className={drawerOpen ? 'active' : ''} onClick={() => { setDrawerOpen(true); setMobilePanel('map'); }}><Table2 size={21} />Data</button></nav>
